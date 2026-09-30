@@ -3,7 +3,29 @@
 
 Mizanora ek multi-API WhatsApp AI agent hai (WhatsApp ke **official Agent Platform API** par, `WHATSAPP_AGENT_API_KEY` se connect hota hai): persistent memory, voice notes (Urdu/Hindi/English), live web search, image generation, code execution (sirf owner ke liye), aur group admin control. GitHub Actions par 24/7 chalne ke liye design kiya gaya hai (har 5h40m par state save → next shift).
 
-## Features
+
+# ⚡ v2 — kya naya hai (upgrade)
+
+| Cheez | Ab kya hota hai |
+|---|---|
+| 🎙️ **Voice (behtar + emotion)** | Jawab ka *mood* (happy / excited / calm / serious / caring / sad / apology) model khud chunta hai aur awaaz ki raftaar, pitch, volume us hisaab se badalti hai. Engine ladder: **Gemini TTS** (expressive, natural Urdu) → **edge-tts** → OpenAI. Roman Urdu jawab bolne se pehle khud **Urdu script** mein badal jata hai (warna English accent mein parhta). ffmpeg se khamoshi trim, loudness barabar, `/speed`, `/voice male|female`. Incoming voice note bhi pehle saaf (noise/rumble) karke STT ko jata hai. Lambe jawab: voice = shuruaat, text = poora. |
+| 🔎 **Naya search system** | Ek saath kai engines (Gemini Google-grounded + Bing + DuckDuckGo + Tavily/Brave/Serper jo keys hon) → duplicates hata kar **reciprocal-rank fusion** se ranking → 5-10 min cache. `recency=day/week/month`. Alag tools: `news_search` (Google News + Bing News, publisher + kitni purani), `wikipedia`, `deep_research` (sawal tor kar 3-6 searches → behtareen pages parhta → **cited brief**), `currency_convert`, `crypto_price`. Page reader ab nav/footer hata kar article deta hai aur PDF bhi parhta hai. |
+| 🌐 **Browser agent** | Asli headless Chromium: `browse`, `screenshot`, aur **`browser_task`** — maqsad do ("daraz par sab se sasta 128GB phone dhundo"), woh khud search/click/type/scroll/read karta hai aur natija + screenshot bhejta hai. Sirf **owner** ke liye. Safety: passwords/OTP/card kabhi type nahi karta; buy/pay/post/delete se pehle aap se poochta hai; localhost/private network block; page ka text sirf *data* hai (prompt-injection se bachao). |
+| ⏰ **Automation** | `schedule_task`: "roz subah 8 baje weather + top news voice mein bhejo", "har Jumma dollar rate check karo" — bot us waqt khud apne tools chala kar natija bhejta hai. `set_reminder` ab repeat aur voice support karta hai. `/tasks`, `/cancel <id>`. Sab memory mein hain, har shift ke baad wapas start. |
+| 🧰 **WhatsApp agent features** | Naye commands (`/search /research /news /browse /shot /task /tasks /cancel /speed /export /ping`), location message samajhna, lambe jawab ke liye document (12 msg/min ki hadd bachane ko), lambe kaam par 2-3 progress messages, file tools (`write_file`, `zip_and_send`). |
+
+**Mark-LIV se kya liya:** browser_control ka idea (numbered elements + normalize URL "instagram → instagram.com"), web_search ki Gemini ladder, edge-tts voices, emotion/viseme ka concept (awaaz ke mood ke roop mein). **Kya nahi liya (WhatsApp/GitHub runner par chal hi nahi sakta):** pyautogui/desktop control, wake word, microphone/speaker, avatar/UI, game updater.
+
+**Naye secrets/variables (sab optional):** `TTS_ORDER`, `TTS_GEMINI_MODELS`, `BROWSER_ENABLED=false` (agar browser band karna ho), `TAVILY_API_KEY`/`BRAVE_API_KEY`/`SERPER_API_KEY` (search aur behtar).
+
+### v2 ki sachchai (zaroor parhein)
+1. **Live test nahi hua.** Mere sandbox mein internet nahi tha: 55 offline checks pass hain (mock Meta API + mock AI + fake browser page), lekin asli Gemini TTS, asli Chromium aur asli Bing/Google News pages par pehli run mein chhoti adjustments lag sakti hain. Har naya hissa fail hone par purane raste par gir jata hai (TTS: Gemini→edge→OpenAI; search: engine fail ho to baaqi chalte hain; browser: saaf error message).
+2. **Gemini TTS ke model naam preview hain** (`gemini-2.5-flash-preview-tts`) aur badal sakte hain; 404 par bot khud agla rung try karta hai. `TTS_GEMINI_MODELS` se badlein. Free quota kam hota hai — 429 par 5 min ke liye edge-tts par chala jata hai.
+3. **GitHub Actions ke IPs par kuch sites captcha/block dengi** (Google, Cloudflare wali). Bing/DuckDuckGo aam taur par chalti hain. Login-wali sites ke liye bot password type nahi karta (jaan boojh kar).
+4. **Browser cookies** `memory_store/browser_state.json` mein save hoti hain (AES se encrypted state ke andar) taake consent/preferences yaad rahein. Agar nahi chahiye to file delete karein ya `BROWSER_ENABLED=false`.
+5. `browser_task` owner ko poori web access deta hai — API key kisi ko na dein (pehle wali warning barqarar hai).
+
+## Features (v1 base)
 | Feature | Kaise kaam karta hai |
 |---|---|
 | Multi-API | Groq, Gemini, OpenRouter, Cerebras, Mistral, DeepSeek, Together, OpenAI, Ollama + koi bhi OpenAI-compatible (`CUSTOM_*`). Har provider ki **kai keys** (`GROQ_API_KEYS=k1,k2,k3`) — rate-limit par key rotate, provider down ho to agla provider |
@@ -82,7 +104,15 @@ src/agentplatform.js  OFFICIAL WhatsApp Agent Platform transport (long-poll, med
 src/whatsapp.js     optional Baileys gateway (groups; unofficial)
 src/brain.js        agent loop (tools), vision, history compaction
 src/llm.js          multi-provider router (key rotation + failover)
-src/voice.js        STT + TTS + ffmpeg (ogg/opus)
+src/voice.js        STT (cleaned audio) + expressive TTS ladder + ffmpeg polish
+src/emotion.js      mood tags → voice rate/pitch/style
+src/commands.js     slash commands (shared by both transports)
+src/scheduler.js    recurring-time math (bot timezone)
+src/jobs.js         runs due reminders + AI agent jobs
+src/vision.js       image understanding (shared)
+src/tools/search.js multi-engine search, news, wiki, deep_research
+src/tools/browser.js headless-browser agent (Playwright)
+src/tools/finance.js currency + crypto
 src/memory.js       persistent memory
 src/tools/          web search, fetch, weather, image, code exec, group admin
 scripts/state.js    AES-256-GCM pack/unpack of memory_store

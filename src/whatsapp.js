@@ -10,7 +10,8 @@ import qrcode from 'qrcode-terminal';
 import { ACCESS, BOT, PATHS, VOICE, digits, env, list } from './config.js';
 import { mem } from './memory.js';
 import { respond } from './brain.js';
-import { transcribe, transcribeVideo, synthesize, detectScript } from './voice.js';
+import { transcribe, transcribeVideo, synthesize, detectScript, voiceOptsFor } from './voice.js';
+import { handleCommand as sharedCommand } from './commands.js';
 import { providerStatus } from './llm.js';
 import { log, warn, err } from './log.js';
 
@@ -84,9 +85,10 @@ export async function createWhatsApp({ pairMode = false, onFatal, onOpen }) {
     },
     async sendImage(jid, buffer, caption = '', quoted) { await sock.sendMessage(jid, { image: buffer, caption }, opts(quoted)); },
     async sendDocument(jid, buffer, fileName, quoted) { await sock.sendMessage(jid, { document: buffer, fileName, mimetype: 'application/octet-stream' }, opts(quoted)); },
-    async sendVoice(jid, text, quoted) {
+    async sendVoice(jid, text, o = {}) {
+      const quoted = o.quoted || (o.key ? o : undefined);      // (legacy callers passed the quoted message directly)
       await sock.sendPresenceUpdate('recording', jid).catch(() => {});
-      const { ogg } = await synthesize(text);
+      const { ogg } = await synthesize(text, o.lang || '', o);
       await sock.sendMessage(jid, { audio: ogg, mimetype: 'audio/ogg; codecs=opus', ptt: true }, opts(quoted));
     },
     groupMetadata,
@@ -138,7 +140,7 @@ export async function createWhatsApp({ pairMode = false, onFatal, onOpen }) {
       case 'status':
         if (!c.isOwner) return null;
         return `Uptime ${Math.round(process.uptime() / 60)} min · run #${mem.data.meta.runs} · users ${Object.keys(mem.data.users).length}\n` + providerStatus().map((p) => `• ${p.id}: ${p.keys} key(s)${p.cooling ? ' (cooling)' : ''}`).join('\n');
-      default: return null;
+      default: return sharedCommand(cmd, arg, c);
     }
   }
 
@@ -192,7 +194,8 @@ export async function createWhatsApp({ pairMode = false, onFatal, onOpen }) {
     const cm = text.match(/^[/!](\w+)\s*(.*)$/s);
     if (cm && !isAudio) {
       const out = await handleCommand(cm[1].toLowerCase(), cm[2].trim(), ctx);
-      if (out) { await wa.sendText(chatId, out, msg); return; }
+      if (typeof out === 'string' && out) { await wa.sendText(chatId, out, msg); return; }
+      if (out?.rewrite) text = out.rewrite; else if (out?.handled) return;
     }
 
     await sock.readMessages([key]).catch(() => {});
@@ -232,7 +235,7 @@ export async function createWhatsApp({ pairMode = false, onFatal, onOpen }) {
       if (reply) {
         let sent = false;
         if (voiceReply) {
-          try { await wa.sendVoice(chatId, reply, msg); sent = true; if (VOICE.sendTextWithVoice) await wa.sendText(chatId, reply); }
+          try { await wa.sendVoice(chatId, reply, { ...voiceOptsFor(senderId, ctx.replyMood), quoted: msg }); sent = true; if (VOICE.sendTextWithVoice) await wa.sendText(chatId, reply); }
           catch (e) { warn('voice reply failed, falling back to text:', e.message); }
         }
         if (!sent) await wa.sendText(chatId, reply, msg);

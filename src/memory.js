@@ -13,7 +13,7 @@ const MAX_LOGS = 200;
 
 const empty = () => ({
   version: 1,
-  users: {},   // jid -> { name, facts:[{t,text}], prefs:{voice:'auto'|'always'|'never'}, firstSeen, lastSeen, messages }
+  users: {},   // jid -> { name, facts:[{t,text}], prefs:{voice:'auto'|'always'|'never', voiceGender:'female'|'male', voiceSpeed:1}, firstSeen, lastSeen, messages }
   chats: {},   // chatId -> { summary, history:[{role,content,t}] }
   tasks: [],   // { id, chatId, dueAt, text, createdBy, done }
   logs: [],    // system log ring buffer
@@ -129,8 +129,8 @@ class Memory {
   resetChat(chatId) { this.data.chats[chatId] = { summary: '', history: [] }; this.touch(); }
 
   // ── tasks / reminders ──
-  addTask({ chatId, dueAt, text, createdBy }) {
-    const t = { id: Math.random().toString(36).slice(2, 8), chatId, dueAt, text: String(text).slice(0, 500), createdBy, done: false };
+  addTask({ chatId, dueAt, text, createdBy, kind = 'reminder', repeat = null, voice = false }) {
+    const t = { id: Math.random().toString(36).slice(2, 8), chatId, dueAt, text: String(text).slice(0, 600), createdBy, done: false, kind, repeat, voice: !!voice, runs: 0 };
     this.data.tasks.push(t);
     this.touch();
     return t;

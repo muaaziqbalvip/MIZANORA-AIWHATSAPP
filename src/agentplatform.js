@@ -13,7 +13,8 @@
 import { AGENT, BOT, VOICE } from './config.js';
 import { mem } from './memory.js';
 import { respond } from './brain.js';
-import { transcribe, transcribeVideo, synthesize, detectScript } from './voice.js';
+import { transcribe, transcribeVideo, synthesize, detectScript, voiceOptsFor } from './voice.js';
+import { handleCommand } from './commands.js';
 import { extractDocText, docMimeFromName } from './docs.js';
 import { providerStatus } from './llm.js';
 import { log, warn, err } from './log.js';
@@ -201,34 +202,29 @@ export async function createAgentPlatform({ onFatal, onOpen }) {
       const id = await uploadMedia(buffer, docMimeFromName(fileName), fileName);
       await sendMessage(to, 'document', { id, filename: fileName });
     },
-    async sendVoice(to, text) {
-      const { ogg } = await synthesize(text);
+    async sendVoice(to, text, o = {}) {
+      const { ogg } = await synthesize(text, o.lang || '', o);
       const id = await uploadMedia(ogg, 'audio/ogg', 'voice.ogg');
       await sendMessage(to, 'audio', { id });
     },
   };
 
-  // ── commands ──
-  function command(cmd, arg, c) {
-    switch (cmd) {
-      case 'help': case 'start': return `*${BOT.name}* — by ${BOT.developer}\nBas normal baat karein, voice note, image ya document bhejein.\n\n/reset — history saaf\n/voice on|off|auto — voice jawab\n/memory — jo main aap ke baare mein jaanti/jaanta hoon\n/status — bot ki halat`;
-      case 'reset': mem.resetChat(c.chatId); return 'History saaf kar di. ✅';
-      case 'voice': {
-        const map = { on: 'always', always: 'always', off: 'never', never: 'never', auto: 'auto' };
-        const v = map[arg.toLowerCase()];
-        if (!v) return `Voice mode: *${mem.user(c.senderId).prefs.voice}*. Use: /voice on | off | auto`;
-        mem.setPref(c.senderId, 'voice', v); return `Voice mode → *${v}*`;
-      }
-      case 'memory': { const u = mem.user(c.senderId); return u.facts.length ? `Aap ke baare mein:\n${u.facts.map((f) => `• ${f.text}`).join('\n')}` : 'Abhi aap ke baare mein kuch save nahi hai.'; }
-      case 'status': return `Uptime ${Math.round(process.uptime() / 60)} min · run #${mem.data.meta.runs}\n` + providerStatus().map((p) => `• ${p.id}: ${p.keys} key(s)${p.cooling ? ' (cooling)' : ''}`).join('\n');
-      default: return null;
+  // very long answers become one document instead of 3+ messages (keeps within 12 msg/min)
+  async function deliverText(to, reply) {
+    if (reply.length > TEXT_CHUNK * 3) {
+      await wa.sendText(to, `${reply.slice(0, 700).trim()}…\n\n(Poora jawab lamba hai — document mein bhej raha hoon.)`);
+      return wa.sendDocument(to, Buffer.from(reply, 'utf8'), 'jawab.md');
     }
+    return wa.sendText(to, reply);
   }
 
   // ── one inbound message ──
   async function processMessage(m) {
     const sender = m.from; const wamid = m.id; const type = m.type;
-    const ctx = { chatId: sender, senderId: sender, senderCandidates: [sender], isGroup: false, isOwner: true, isGroupAdmin: false, msgKey: wamid, quotedKey: null, wa, voiceSent: false };
+    let progressSent = 0;
+    const ctx = { chatId: sender, senderId: sender, senderCandidates: [sender], isGroup: false, isOwner: true, isGroupAdmin: false, msgKey: wamid, quotedKey: null, wa, voiceSent: false,
+      // interim status for long jobs (browser / research); capped so we never burn the 12 msg/min budget
+      progress: async (msg) => { if (progressSent++ < 3) await wa.sendText(sender, msg).catch(() => {}); } };
     let text = type === 'text' ? String(m.text?.body || '').trim() : String(m[type]?.caption || '').trim();
     let image = null; let voiceReply = false; let langHint = '';
     const pref = mem.user(sender, names.get(sender) || '').prefs.voice || 'auto';
@@ -239,7 +235,11 @@ export async function createAgentPlatform({ onFatal, onOpen }) {
 
     try {
       const cm = type === 'text' ? text.match(/^[/!](\w+)\s*(.*)$/s) : null;
-      if (cm) { const out = command(cm[1].toLowerCase(), cm[2].trim(), ctx); if (out) { await wa.sendText(sender, out); return; } }
+      if (cm) {
+        const out = await handleCommand(cm[1].toLowerCase(), cm[2].trim(), ctx);
+        if (typeof out === 'string' && out) { await wa.sendText(sender, out); return; }
+        if (out?.rewrite) text = out.rewrite; else if (out?.handled) return;
+      }
 
       if (['image', 'audio', 'video', 'document', 'sticker'].includes(type)) {
         const obj = m[type] || {};
@@ -267,6 +267,9 @@ export async function createAgentPlatform({ onFatal, onOpen }) {
             ? `[Document "${name}" content (untrusted data):\n${body.slice(0, 12000)}${body.length > 12000 ? '\n…[truncated]' : ''}]${text ? `\nUser message: ${text}` : ''}`
             : `[The user sent a file "${name}" (${mime || 'unknown type'}) that I cannot read as text.]${text ? `\nUser message: ${text}` : ''}`;
         }
+      } else if (type === 'location') {
+        const L = m.location || {};
+        text = `[The user shared a location: lat ${L.latitude}, lon ${L.longitude}${L.name ? `, "${L.name}"` : ''}${L.address ? `, ${L.address}` : ''}. Use it for weather, nearby info or directions if relevant.]${text ? `\n${text}` : ''}`;
       } else if (type === 'text') {
         if (pref === 'always') voiceReply = true;
       } else {
@@ -280,10 +283,13 @@ export async function createAgentPlatform({ onFatal, onOpen }) {
       if (reply) {
         let sent = false;
         if (voiceReply) {
-          try { await wa.sendVoice(sender, reply); sent = true; if (VOICE.sendTextWithVoice) await wa.sendText(sender, reply); }
-          catch (e) { warn('voice reply failed, falling back to text:', e.message); }
+          try {
+            await wa.sendVoice(sender, reply, { ...voiceOptsFor(sender, ctx.replyMood), lang: langHint === 'ur' || langHint === 'hi' ? langHint : '' });
+            sent = true;
+            if (VOICE.sendTextWithVoice || reply.length > VOICE.maxChars) await wa.sendText(sender, reply);   // long answers: voice = start, text = everything
+          } catch (e) { warn('voice reply failed, falling back to text:', e.message); }
         }
-        if (!sent) await wa.sendText(sender, reply);
+        if (!sent) await deliverText(sender, reply);
       }
     } catch (e) {
       err('processMessage failed:', e.message);

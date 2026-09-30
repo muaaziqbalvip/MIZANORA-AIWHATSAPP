@@ -4,7 +4,13 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { PATHS, digits } from '../config.js';
 import { mem } from '../memory.js';
-import { webSearch, fetchUrl, getWeather } from './net.js';
+import { fetchUrl, getWeather } from './net.js';
+import { webSearch, newsSearch, wikipedia, deepResearch } from './search.js';
+import { convertCurrency, cryptoPrice } from './finance.js';
+import { browseTool, screenshotTool, browserTaskTool, closeBrowser, browserAvailable } from './browser.js';
+import { firstDue, normalizeRepeat, describeRepeat } from '../scheduler.js';
+import { voiceOptsFor } from '../voice.js';
+import { execFile } from 'node:child_process';
 import { generateImageBuffer } from './image.js';
 import { runPython, runShell, listWorkspace } from './exec.js';
 import { providerStatus } from '../llm.js';
@@ -24,9 +30,37 @@ const TOOLS = {
   // ───────── everyone ─────────
   web_search: {
     access: 'all',
-    desc: 'Search the live web for current information: news, prices, weather context, sports, facts that may have changed, anything after your training data. Use it whenever freshness matters.',
-    params: obj({ query: str('Concise search query'), max_results: num('1-8, default 5') }, ['query']),
+    desc: 'Search the live web (Google-grounded + Bing + DuckDuckGo + optional Tavily/Brave/Serper, merged and ranked). Use for anything current or uncertain: news, prices, scores, "latest", facts that may have changed. For a big or contested question use deep_research instead.',
+    params: obj({ query: str('Concise search query (2-8 words work best)'), max_results: num('1-8, default 5'), recency: str('Only results from the last: day | week | month | year (omit for any time)', { enum: ['day', 'week', 'month', 'year'] }) }, ['query']),
     run: (a) => webSearch(a),
+  },
+  news_search: {
+    access: 'all',
+    desc: 'Latest news headlines with publisher and age (Google News + Bing News), newest first. Use for "news", "what happened", "breaking", current events.',
+    params: obj({ query: str('Topic, person, place or event'), max_results: num('1-10, default 6'), recency: str('day | week | month (default week)', { enum: ['day', 'week', 'month'] }) }, ['query']),
+    run: (a) => newsSearch(a),
+  },
+  deep_research: {
+    access: 'all',
+    desc: 'In-depth research: plans several searches, reads the best pages, cross-checks sources and returns a cited brief. Takes 20-60 s. Use for comparisons, "explain/why/how", buying decisions, anything needing more than one source.',
+    params: obj({ question: str('The full research question'), depth: str('quick | normal | deep (default normal)', { enum: ['quick', 'normal', 'deep'] }), recency: str('day | week | month | year — restrict to fresh sources', { enum: ['day', 'week', 'month', 'year'] }) }, ['question']),
+    run: (a, ctx) => deepResearch(a, { progress: ctx.progress }),
+  },
+  wikipedia: {
+    access: 'all',
+    desc: 'Wikipedia summary of a person/place/concept. lang: en, ur, hi, ar…',
+    params: obj({ query: str('Topic'), lang: str('Wikipedia language code, default en') }, ['query']),
+    run: (a) => wikipedia(a),
+  },
+  currency_convert: {
+    access: 'all', desc: 'Convert money between currencies at the current rate (e.g. USD → PKR).',
+    params: obj({ amount: num('Amount, default 1'), from: str('3-letter code, e.g. USD'), to: str('3-letter code, e.g. PKR') }, ['from', 'to']),
+    run: (a) => convertCurrency(a),
+  },
+  crypto_price: {
+    access: 'all', desc: 'Live cryptocurrency price and 24h change (btc, eth, sol, doge… or any CoinGecko name).',
+    params: obj({ coin: str('Symbol or name, e.g. btc'), vs: str('Comma list of currencies, default usd,pkr') }, ['coin']),
+    run: (a) => cryptoPrice(a),
   },
   fetch_url: {
     access: 'all',
@@ -52,9 +86,19 @@ const TOOLS = {
   },
   send_voice_note: {
     access: 'all',
-    desc: 'Send text as a WhatsApp voice note (use when the user asks you to speak / reply in voice). Write the text in the user\'s language and native script (Urdu in Urdu script).',
-    params: obj({ text: str('Exactly what to say aloud') }, ['text']),
-    run: async (a, ctx) => { await ctx.wa.sendVoice(ctx.chatId, a.text, ctx.msgKey); ctx.voiceSent = true; return 'Voice note sent.'; },
+    desc: 'Send text as a WhatsApp voice note (use when the user asks you to speak / reply in voice). Write the text in the user\'s language and native script (Urdu in Urdu script). Pick a mood so the voice sounds natural.',
+    params: obj({ text: str('Exactly what to say aloud'), mood: str('neutral | happy | excited | calm | serious | sad | caring | apology', { enum: ['neutral', 'happy', 'excited', 'calm', 'serious', 'sad', 'caring', 'apology'] }) }, ['text']),
+    run: async (a, ctx) => { await ctx.wa.sendVoice(ctx.chatId, a.text, { ...voiceOptsFor(ctx.senderId, a.mood || ''), quoted: ctx.msgKey }); ctx.voiceSent = true; return 'Voice note sent.'; },
+  },
+  set_voice_style: {
+    access: 'all',
+    desc: 'Change how the user\'s voice replies sound: gender (male|female) and speed (0.8 slow … 1.3 fast). Also use when the user says "awaaz slow karo", "mard ki awaaz", etc.',
+    params: obj({ gender: str('male | female', { enum: ['male', 'female'] }), speed: num('0.7-1.5, default 1') }),
+    run: (a, ctx) => {
+      if (a.gender) mem.setPref(ctx.senderId, 'voiceGender', a.gender === 'male' ? 'male' : 'female');
+      if (a.speed) mem.setPref(ctx.senderId, 'voiceSpeed', Math.min(Math.max(Number(a.speed) || 1, 0.7), 1.5));
+      const p = mem.user(ctx.senderId).prefs; return `Voice style saved: ${p.voiceGender || 'female'}, speed ${p.voiceSpeed || 1}.`;
+    },
   },
   remember_fact: {
     access: 'all',
@@ -70,18 +114,29 @@ const TOOLS = {
   },
   set_reminder: {
     access: 'all',
-    desc: 'Schedule a reminder message in this chat. Give EITHER in_minutes OR at (ISO 8601 with timezone offset, e.g. 2026-10-01T09:00:00+05:00).',
-    params: obj({ text: str('What to remind about'), in_minutes: num('Minutes from now'), at: str('Absolute ISO time') }, ['text']),
+    desc: 'Schedule a reminder message in this chat. Give in_minutes OR at (ISO 8601 with timezone offset, e.g. 2026-10-01T09:00:00+05:00). For a repeating reminder add repeat. Set voice=true to have it spoken.',
+    params: obj({ text: str('What to remind about'), in_minutes: num('Minutes from now'), at: str('Absolute ISO time'), repeat: { type: 'object', description: 'Optional recurrence: {type:"daily",time:"08:00"} | {type:"weekly",days:[1..7 Mon=1],time:"21:30"} | {type:"every",minutes:90}. Times are in the bot timezone.' }, voice: { type: 'boolean', description: 'Deliver as a voice note' } }, ['text']),
     run: (a, ctx) => {
-      let due = a.in_minutes ? Date.now() + Number(a.in_minutes) * 60000 : Date.parse(a.at);
-      if (!Number.isFinite(due) || due < Date.now() - 1000) throw new Error('Invalid or past time');
-      const t = mem.addTask({ chatId: ctx.chatId, dueAt: due, text: a.text, createdBy: ctx.senderId });
-      return `Reminder ${t.id} set for ${new Date(due).toISOString()}.`;
+      const repeat = normalizeRepeat(a.repeat);
+      const due = firstDue({ in_minutes: a.in_minutes, at: a.at, repeat });
+      const t = mem.addTask({ chatId: ctx.chatId, dueAt: due, text: a.text, createdBy: ctx.senderId, repeat, voice: a.voice });
+      return `Reminder ${t.id} set for ${new Date(due).toISOString()} (${describeRepeat(repeat)}).`;
+    },
+  },
+  schedule_task: {
+    access: 'owner',
+    desc: 'Automation: schedule a PROMPT that you run yourself (with web search, browser, weather… tools) at a time or on a repeat, and send the result to this chat — e.g. "every day 8am: weather + top news", "every Friday: check dollar rate", "tomorrow 9am: research X". Write the prompt as a complete self-contained instruction.',
+    params: obj({ prompt: str('Self-contained instruction to execute when it fires'), in_minutes: num('Minutes from now (one-off)'), at: str('Absolute ISO time (one-off)'), repeat: { type: 'object', description: '{type:"daily",time:"08:00"} | {type:"weekly",days:[1..7],time:"21:30"} | {type:"every",minutes:120}' }, voice: { type: 'boolean', description: 'Send the result as a voice note' } }, ['prompt']),
+    run: (a, ctx) => {
+      const repeat = normalizeRepeat(a.repeat);
+      const due = firstDue({ in_minutes: a.in_minutes, at: a.at, repeat });
+      const t = mem.addTask({ chatId: ctx.chatId, dueAt: due, text: a.prompt, createdBy: ctx.senderId, kind: 'agent', repeat, voice: a.voice });
+      return `Scheduled task ${t.id}: first run ${new Date(due).toISOString()} (${describeRepeat(repeat)}${a.voice ? ', voice' : ''}). Cancel with cancel_reminder id ${t.id}.`;
     },
   },
   list_reminders: {
-    access: 'all', desc: 'List pending reminders in this chat.', params: obj({}),
-    run: (_a, ctx) => mem.pendingTasks(ctx.chatId).map((t) => `${t.id}: ${new Date(t.dueAt).toISOString()} — ${t.text}`).join('\n') || 'No pending reminders.',
+    access: 'all', desc: 'List pending reminders and scheduled tasks in this chat.', params: obj({}),
+    run: (_a, ctx) => mem.pendingTasks(ctx.chatId).map((t) => `${t.id}: ${t.kind === 'agent' ? '🤖 task' : '⏰'} ${new Date(t.dueAt).toISOString()} (${describeRepeat(t.repeat)}) — ${t.text.slice(0, 120)}`).join('\n') || 'No pending reminders or tasks.',
   },
   cancel_reminder: {
     access: 'all', desc: 'Cancel a reminder by id.', params: obj({ id: str('Reminder id') }, ['id']),
@@ -101,6 +156,46 @@ const TOOLS = {
     params: obj({ command: str('Bash command'), timeout_sec: num('Default 60, max 170') }, ['command']),
     run: (a) => runShell(a),
   },
+  browse: {
+    access: 'owner',
+    desc: 'Open a page in the real headless browser (handles JavaScript sites, dynamic content) and return its title, numbered interactive elements and visible text. Set screenshot=true to also send a screenshot to the chat. For multi-step goals use browser_task.',
+    params: obj({ url: str('URL or a bare site name like "youtube"'), screenshot: { type: 'boolean', description: 'Also send a screenshot' }, max_chars: num('Text chars to return (500-3200)') }, ['url']),
+    run: (a, ctx) => browseTool(a, ctx),
+  },
+  screenshot: {
+    access: 'owner',
+    desc: 'Take a screenshot of a web page (or of the page currently open) and send it to the chat as an image.',
+    params: obj({ url: str('URL to open first (omit to shoot the current page)'), full_page: { type: 'boolean', description: 'Capture the whole scrolling page' }, caption: str('Optional caption') }),
+    run: (a, ctx) => screenshotTool(a, ctx),
+  },
+  browser_task: {
+    access: 'owner',
+    desc: 'Autonomous web agent: give a GOAL and it browses on its own (search, open pages, click, fill forms, scroll, read) until done — e.g. "find the cheapest 128GB phone on daraz.pk", "check flight prices Lahore→Dubai next Friday", "open this page and summarise the pricing table". Takes 30-120 s. It never enters passwords/cards and asks before buying/posting/deleting.',
+    params: obj({ goal: str('What to achieve, with all details'), start_url: str('Optional URL to start from'), max_steps: num('Default 14, max 30'), allow_sensitive: { type: 'boolean', description: 'ONLY true after the user explicitly confirmed a buy/post/send/delete step' }, screenshot_at_end: { type: 'boolean', description: 'Send a final screenshot (default true)' } }, ['goal']),
+    run: (a, ctx) => browserTaskTool(a, ctx),
+  },
+  browser_close: { access: 'owner', desc: 'Close the browser and free memory.', params: obj({}), run: () => closeBrowser('requested') },
+  write_file: {
+    access: 'owner', desc: 'Create/overwrite a text file in the workspace (code, notes, csv, html…). Then use send_workspace_file to deliver it.',
+    params: obj({ filename: str('Name inside the workspace, e.g. report.md or site/index.html'), content: str('File content') }, ['filename', 'content']),
+    run: (a) => { const p = path.resolve(PATHS.workspace, a.filename); if (!p.startsWith(PATHS.workspace + path.sep)) throw new Error('Path escapes the workspace'); fs.mkdirSync(path.dirname(p), { recursive: true }); fs.writeFileSync(p, String(a.content)); return `Wrote ${path.relative(PATHS.workspace, p)} (${Buffer.byteLength(String(a.content))} bytes).`; },
+  },
+  read_file: {
+    access: 'owner', desc: 'Read a text file from the workspace.', params: obj({ filename: str('File name in the workspace'), max_chars: num('Default 6000') }, ['filename']),
+    run: (a) => { const p = path.resolve(PATHS.workspace, a.filename); if (!p.startsWith(PATHS.workspace + path.sep) || !fs.existsSync(p)) throw new Error('File not found in workspace'); return fs.readFileSync(p, 'utf8').slice(0, Math.min(Number(a.max_chars) || 6000, 12000)); },
+  },
+  zip_and_send: {
+    access: 'owner', desc: 'Zip a workspace folder or file and send the .zip to the chat (e.g. a generated project/website).',
+    params: obj({ path: str('Folder or file inside the workspace') }, ['path']),
+    run: async (a, ctx) => {
+      const src = path.resolve(PATHS.workspace, a.path);
+      if (!(src + path.sep).startsWith(PATHS.workspace + path.sep) || !fs.existsSync(src)) throw new Error('Path not found in workspace');
+      const out = path.join(PATHS.workspace, `${path.basename(src)}-${Date.now()}.zip`);
+      await new Promise((res, rej) => execFile('python3', ['-m', 'zipfile', '-c', out, src], { cwd: PATHS.workspace, timeout: 60000 }, (e) => (e ? rej(e) : res())));
+      await ctx.wa.sendDocument(ctx.chatId, fs.readFileSync(out), path.basename(out), ctx.msgKey);
+      return `Sent ${path.basename(out)}.`;
+    },
+  },
   list_workspace: { access: 'owner', desc: 'List files in the bot workspace.', params: obj({}), run: () => listWorkspace() },
   send_workspace_file: {
     access: 'owner',
@@ -119,7 +214,7 @@ const TOOLS = {
     params: obj({}),
     run: () => {
       const up = Math.round(process.uptime() / 60);
-      return `Uptime ${up} min. Users ${Object.keys(mem.data.users).length}, chats ${Object.keys(mem.data.chats).length}, pending tasks ${mem.pendingTasks().length}, run #${mem.data.meta.runs}.\nProviders:\n` +
+      return `Uptime ${up} min. Browser ${browserAvailable() ? 'enabled' : 'disabled'}. Users ${Object.keys(mem.data.users).length}, chats ${Object.keys(mem.data.chats).length}, pending tasks ${mem.pendingTasks().length}, run #${mem.data.meta.runs}.\nProviders:\n` +
         providerStatus().map((p) => `- ${p.id}: ${p.keys} key(s), model ${p.model}${p.cooling ? ' (cooling)' : ''}`).join('\n');
     },
   },

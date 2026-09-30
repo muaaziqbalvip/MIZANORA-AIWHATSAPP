@@ -51,6 +51,12 @@ const server = http.createServer((req, res) => {
     if (j.model === 'bad-model') { res.writeHead(429, { 'Retry-After': '1' }); return res.end('quota'); }
     const last = j.messages[j.messages.length - 1];
     const send = (message) => { res.writeHead(200, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ choices: [{ message }] })); };
+    if (String(j.messages[0]?.content).includes('browser agent inside')) {
+      const u = String(last.content);
+      if (u.includes('SENSITIVE_TEST')) return send({ role: 'assistant', content: '{"thought":"buy it","action":{"type":"click","id":2}}' });
+      const done = /RECENT ACTIONS:\n\d+\./.test(u);
+      return send({ role: 'assistant', content: done ? '```json\n{"done":true,"answer":"Price is Rs 1999"}\n```' : '{"thought":"open product","action":{"type":"click","id":1}}' });
+    }
     if (last.role === 'tool') return send({ role: 'assistant', content: `Done. Tool said: ${last.content}` });
     if (JSON.stringify(last.content).includes('my name is Muaaz') && j.tools) {
       return send({ role: 'assistant', content: '', tool_calls: [{ id: 'c1', type: 'function', function: { name: 'remember_fact', arguments: '{"fact":"Name is Muaaz"}' } }] });
@@ -178,6 +184,108 @@ assert.equal(parseAgentUpdates({ object: 'whatsapp_agent_platform', next_offset:
 assert.throws(() => parseAgentUpdates({ object: 'nope' })); ok('updates envelope parser accepts the documented shape and rejects others');
 assert.ok(!mediaUrlAllowed('https://evil.example.com/steal')); assert.ok(mediaUrlAllowed('https://lookaside.fbsbx.com/agent/v1/media/1/content')); ok('API key is only ever sent to Meta media hosts (evil host rejected)');
 await gw.stop();
+
+// ═════════════════════════ v2 upgrade checks ═════════════════════════
+console.log('\nv2 upgrade');
+const { extractMood, inferMood, moodParams } = await import('../src/emotion.js');
+assert.deepEqual(extractMood('[mood: caring] Fikr na karein'), { text: 'Fikr na karein', mood: 'caring' });
+assert.deepEqual(extractMood('[mood: bogus] hi'), { text: 'hi', mood: '' }); assert.equal(inferMood('Maazrat, ghalti ho gayi'), 'apology'); assert.ok(moodParams('excited').rate.startsWith('+'));
+ok('voice emotion: mood tag parsed/stripped, unknown tags ignored, fallback inference, mood → rate/pitch');
+
+const V = await import('../src/voice.js');
+assert.ok(V.isRomanUrdu('kya haal hai aap ka') && V.isRomanUrdu('mujhe kal subah 8 baje uthana') && !V.isRomanUrdu('how are you doing today my friend'));
+ok('Roman-Urdu detector (so it can be converted to Urdu script before speaking)');
+assert.match(V.speechFilter(1.2), /atempo=1\.20/); assert.ok(V.speechFilter(1).includes('loudnorm') && !V.speechFilter(1).includes('atempo'));
+assert.ok(V.speechExcerpt('Salam. '.repeat(400), 300).endsWith('.') && V.speechExcerpt('x'.repeat(50), 300).length === 50); ok('speech filter chain (silence trim + loudnorm + speed) and sentence-safe truncation');
+try {
+  execFileSync('ffmpeg', ['-y', '-f', 'lavfi', '-i', 'sine=frequency=220:duration=1.5', '-ar', '24000', '-ac', '1', '-f', 's16le', path.join(tmp, 't.pcm')], { stdio: 'ignore' });
+  const ogg = await V.toOggOpus(fs.readFileSync(path.join(tmp, 't.pcm')), { inputArgs: ['-f', 's16le', '-ar', '24000', '-ac', '1'], speed: 1.1 });
+  assert.equal(ogg.subarray(0, 4).toString(), 'OggS'); ok('raw PCM (Gemini TTS format) → polished WhatsApp ogg/opus via ffmpeg');
+} catch (e) { if (/ENOENT/.test(String(e.message))) console.log('  – skipped (ffmpeg missing)'); else throw e; }
+const vo = (mem.user('vu1').prefs.voiceGender = 'male', mem.user('vu1').prefs.voiceSpeed = 1.2, V.voiceOptsFor('vu1', 'happy'));
+assert.deepEqual(vo, { mood: 'happy', gender: 'male', speed: 1.2 }); ok('per-user voice style (gender/speed) feeds the synthesiser');
+
+// search
+const S = await import('../src/tools/search.js');
+const items = S.parseRss('<rss><channel><item><title>Big news - Dawn</title><link>https://dawn.com/a?utm_source=x</link><pubDate>Wed, 30 Sep 2026 06:00:00 GMT</pubDate><source url="https://dawn.com">Dawn</source></item><item><title><![CDATA[Other &amp; story]]></title><link>https://bbc.com/b</link></item></channel></rss>');
+assert.equal(items.length, 2); assert.equal(items[0].title, 'Big news'); assert.equal(items[0].source, 'Dawn'); assert.equal(items[1].title, 'Other & story'); assert.ok(items[0].published > 0); ok('news RSS parser (title/publisher/date, CDATA, entities)');
+const mg = S.rrfMerge([{ engine: 'a', results: [{ title: 'X', url: 'https://www.example.com/p/?utm_source=z', snippet: 's' }, { title: 'Y', url: 'https://y.com/' }] }, { engine: 'b', results: [{ title: 'Y', url: 'https://y.com', snippet: 'longer snippet' }, { title: 'Z', url: 'https://z.com' }] }]);
+assert.equal(mg.length, 3); assert.equal(mg[0].engines.length, 2); assert.equal(mg.find((r) => r.title === 'Y').snippet, 'longer snippet'); assert.ok(mg[2].engines.length === 1); ok('multi-engine merge: de-duplicates URLs (utm/www/slash), boosts results found by several engines');
+const bh = S.parseBing('<li class="b_algo"><h2><a href="https://ex.org/a">Hello &amp; <strong>World</strong></a></h2><div class="b_caption"><p>Snippet <b>here</b></p></div></li>');
+assert.deepEqual(bh[0], { title: 'Hello & World', url: 'https://ex.org/a', snippet: 'Snippet here' });
+const b64 = Buffer.from('https://real.example/page').toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+assert.equal(S.decodeBingUrl(`https://www.bing.com/ck/a?!&&p=1&u=a1${b64}&ntb=1`), 'https://real.example/page'); ok('Bing parser + redirect-link decoder');
+const { mainText } = await import('../src/tools/net.js');
+const mt = mainText('<nav>MENU</nav><article>' + 'Real content. '.repeat(50) + '</article><footer>legal</footer>'); assert.ok(mt.startsWith('Real content') && !mt.includes('MENU') && !mt.includes('legal')); ok('page reader strips nav/footer and keeps the article');
+
+// scheduler
+const SC = await import('../src/scheduler.js');
+assert.equal(SC.TZ, 'Asia/Karachi');
+const from = Date.parse('2026-09-30T02:00:00Z');                       // 07:00 in Karachi
+assert.equal(new Date(SC.nextOccurrence({ type: 'daily', time: '08:00' }, from)).toISOString(), '2026-09-30T03:00:00.000Z');
+assert.equal(new Date(SC.nextOccurrence({ type: 'daily', time: '06:00' }, from)).toISOString(), '2026-10-01T01:00:00.000Z');
+assert.equal(new Date(SC.nextOccurrence({ type: 'weekly', days: [5], time: '21:30' }, from)).toISOString(), '2026-10-02T16:30:00.000Z');
+assert.throws(() => SC.normalizeRepeat({ type: 'daily', time: '25:00' })); assert.throws(() => SC.normalizeRepeat({ type: 'every', minutes: 1 })); ok('recurring schedules computed in the bot timezone (daily / weekly / every N min) with validation');
+
+const sent = []; const fakeWa = { sendText: async (to, t) => { sent.push(['text', to, t]); }, sendVoice: async (to, t) => { sent.push(['voice', to, t]); } };
+const { startScheduler } = await import('../src/jobs.js');
+const rem = mem.addTask({ chatId: 'c@1', dueAt: Date.now() - 10, text: 'chai', createdBy: 'x', repeat: { type: 'every', minutes: 5 } });
+const job = mem.addTask({ chatId: 'c@1', dueAt: Date.now() - 10, text: 'daily brief', createdBy: 'x', kind: 'agent', repeat: { type: 'daily', time: '08:00' } });
+const tm = startScheduler(() => fakeWa, { tickMs: 60 });
+assert.ok(await waitFor(() => sent.length >= 2, 8000)); clearInterval(tm);
+assert.ok(sent.some((x) => /Yaad dehani: chai/.test(x[2]))); assert.ok(sent.some((x) => /Salam! Main Mizanora/.test(x[2])));
+const remAfter = mem.data.tasks.find((t) => t.id === rem.id); const jobAfter = mem.data.tasks.find((t) => t.id === job.id);
+assert.ok(!remAfter.done && remAfter.dueAt > Date.now() + 4 * 60000 && remAfter.runs === 1); assert.ok(!jobAfter.done && jobAfter.dueAt > Date.now() && jobAfter.runs === 1);
+ok('automation: recurring reminder + recurring AI agent job both fire, deliver to the chat and reschedule themselves');
+
+// tools & permissions
+const ownerNames = toolSpecs(baseCtx).map((t) => t.function.name); const guestNames = toolSpecs(guest).map((t) => t.function.name);
+for (const n of ['browse', 'browser_task', 'screenshot', 'schedule_task', 'write_file', 'zip_and_send']) { assert.ok(ownerNames.includes(n), `owner missing ${n}`); assert.ok(!guestNames.includes(n), `guest sees ${n}`); }
+for (const n of ['web_search', 'news_search', 'deep_research', 'wikipedia', 'currency_convert', 'crypto_price', 'set_voice_style', 'set_reminder']) assert.ok(guestNames.includes(n), `everyone should have ${n}`);
+ok('new tools registered: browser/automation/files owner-only; search, news, research, finance, voice-style for everyone');
+assert.match(await executeTool('schedule_task', { prompt: 'x', in_minutes: 5 }, guest), /not permitted/); assert.match(await executeTool('browser_task', { goal: 'x' }, guest), /not permitted/); ok('non-owner cannot schedule agent jobs or drive the browser');
+const st = await executeTool('schedule_task', { prompt: 'weather + news', repeat: { type: 'daily', time: '08:00' }, voice: true }, baseCtx); assert.match(st, /Scheduled task \w+/); assert.match(await executeTool('list_reminders', {}, baseCtx), /🤖 task/); ok('schedule_task tool creates a daily voice job that shows up in list_reminders');
+assert.match(await executeTool('write_file', { filename: '../evil.txt', content: 'x' }, baseCtx), /escapes/); assert.match(await executeTool('write_file', { filename: 'ok/a.txt', content: 'hi' }, baseCtx), /Wrote/); assert.equal(await executeTool('read_file', { filename: 'ok/a.txt' }, baseCtx), 'hi'); ok('workspace file tools work and cannot escape the workspace');
+
+// browser agent (fake Playwright page — no Chromium needed)
+const B = await import('../src/tools/browser.js');
+const clicks = []; const typed = [];
+const snapEls = [{ id: 1, tag: 'a', type: '', label: 'Samsung A15 128GB', href: '/p/1', value: '' }, { id: 2, tag: 'button', type: '', label: 'Buy now', href: '', value: '' }, { id: 3, tag: 'input', type: 'password', label: 'Password', href: '', value: '' }, { id: 4, tag: 'input', type: 'text', label: 'Search', href: '', value: '' }];
+const fakePage = {
+  url: () => 'https://shop.example/cart', title: async () => 'Shop',
+  evaluate: async () => ({ title: 'Shop', url: 'https://shop.example/cart', text: 'Samsung A15 — Rs 1999', elements: snapEls, y: 0, h: 2000, vh: 800 }),
+  locator: (sel) => ({ first: () => ({ click: async () => clicks.push(sel), fill: async (t) => typed.push([sel, t]) }) }),
+  waitForLoadState: async () => {}, waitForTimeout: async () => {}, keyboard: { press: async () => {} }, mouse: { wheel: async () => {} },
+};
+const bs = new B.BrowserSession({}, {}); bs.page = fakePage;
+await bs.snapshot();
+await assert.rejects(bs.act({ type: 'click', id: 2 }), (e) => e instanceof B.NeedConfirm);
+assert.equal(clicks.length, 0); await bs.act({ type: 'click', id: 2 }, { allowSensitive: true }); assert.equal(clicks.length, 1);
+await assert.rejects(bs.act({ type: 'type', id: 3, text: 'hunter2' }), (e) => e instanceof B.Blocked);
+await assert.rejects(bs.act({ type: 'type', id: 4, text: '4111 1111 1111 1111' }), (e) => e instanceof B.Blocked);
+await bs.act({ type: 'type', id: 4, text: 'samsung a15', submit: true }); assert.deepEqual(typed[0], ['[data-mz="4"]', 'samsung a15']);
+ok('browser safety: buy/pay clicks need confirmation; passwords and card numbers are never typed; normal typing works');
+clicks.length = 0;
+const br1 = await B.runBrowserTask({ goal: 'find the price of Samsung A15', maxSteps: 5, session: bs });
+assert.equal(br1.status, 'done'); assert.match(br1.text, /1999/); assert.equal(clicks.length, 1); ok('browser agent loop: LLM picks an action → page acts → LLM finishes with the answer (fenced JSON tolerated)');
+const br2 = await B.runBrowserTask({ goal: 'SENSITIVE_TEST order it', maxSteps: 4, session: bs });
+assert.equal(br2.status, 'confirm'); assert.match(br2.text, /Buy now/); ok('browser agent stops and asks the user before a purchase-type click');
+const blocked = []; const route = (u) => ({ request: () => ({ url: () => u }), abort: async () => blocked.push(u), continue: async () => blocked.push('ok:' + u) });
+await bs.guard(route('http://127.0.0.1:8080/admin')); await bs.guard(route('http://169.254.169.254/latest/meta-data')); await bs.guard(route('file:///etc/passwd'));
+assert.deepEqual(blocked, ['http://127.0.0.1:8080/admin', 'http://169.254.169.254/latest/meta-data', 'file:///etc/passwd']); ok('browser network guard aborts requests to localhost / cloud-metadata / file://');
+assert.equal(B.normalizeUrl('instagram'), 'https://instagram.com'); assert.match(B.normalizeUrl('best laptops 2026'), /bing\.com\/search\?q=best%20laptops%202026/); ok('smart URL normaliser (bare site name, domain, free text → search)');
+
+// commands
+const { handleCommand } = await import('../src/commands.js');
+const cc = { senderId: 'cmd1', chatId: 'cmdchat', isOwner: true, wa: fakeWa, msgKey: null };
+assert.match(await handleCommand('voice', 'male', cc), /mard/); assert.equal(mem.user('cmd1').prefs.voiceGender, 'male');
+assert.match(await handleCommand('speed', '1.2', cc), /1\.2/); assert.equal(mem.user('cmd1').prefs.voiceSpeed, 1.2); assert.match(await handleCommand('speed', '9', cc), /0\.7/);
+assert.match((await handleCommand('research', 'ev cars in pakistan', cc)).rewrite, /deep_research/); assert.match(await handleCommand('browse', 'x.com', { ...cc, isOwner: false }), /owner/);
+assert.match(await handleCommand('help', '', cc), /\/research/); assert.equal(await handleCommand('nonsense', '', cc), null); ok('slash commands: /voice male, /speed, /research, /browse (owner-only), /help, unknown → passes to AI');
+
+// full pipeline: mood-tagged voice reply is stripped for text and exposed for the voice engine
+const mctx = { ...baseCtx, chatId: 'mood@1', senderId: 'mood@1' };
+const moodReply = await respond({ text: 'hi', voiceReply: true, ctx: mctx }); assert.ok(!/\[mood/.test(moodReply)); assert.ok(['neutral', 'happy', 'excited', 'calm', 'serious', 'caring', 'sad', 'apology'].includes(mctx.replyMood)); ok('brain: reply mood resolved for the voice engine, tag never leaks into text');
 
 server.close(); fs.rmSync(tmp, { recursive: true, force: true });
 console.log(`\nAll ${n} checks passed.`);

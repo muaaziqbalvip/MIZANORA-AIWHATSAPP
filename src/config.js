@@ -109,6 +109,17 @@ export const VOICE = {
   },
   ttsRate: env('TTS_RATE', '+0%'),
   sendTextWithVoice: envBool('SEND_TEXT_WITH_VOICE', false),
+  // ── v2 voice: engine ladder, expressive Gemini TTS, male/female voices, emotion ──
+  ttsOrder: list(env('TTS_ORDER', 'gemini,edge,openai')),          // first working engine wins
+  geminiTtsModels: list(env('TTS_GEMINI_MODELS', 'gemini-2.5-flash-preview-tts,gemini-2.5-pro-preview-tts')),
+  geminiVoice: { f: env('TTS_GEMINI_VOICE_F', 'Kore'), m: env('TTS_GEMINI_VOICE_M', 'Charon') },
+  ttsVoicesMale: {
+    ur: env('TTS_VOICE_UR_M', 'ur-PK-AsadNeural'),
+    hi: env('TTS_VOICE_HI_M', 'hi-IN-MadhurNeural'),
+    en: env('TTS_VOICE_EN_M', 'en-US-GuyNeural'),
+  },
+  transliterate: envBool('TTS_TRANSLITERATE', true),               // Roman Urdu → Urdu script before speaking (correct pronunciation)
+  maxChars: envInt('TTS_MAX_CHARS', 1800),
 };
 
 export const IMAGE_ORDER = list(env('IMAGE_PROVIDER_ORDER', 'pollinations,huggingface,together,openai'));
@@ -128,3 +139,16 @@ export const AGENT = {
   maxAgeMin: envInt('AGENT_MAX_AGE_MIN', 60),
 };
 export const WA_MODE = (env('WA_MODE', AGENT.apiKey ? 'agent' : 'baileys')).toLowerCase() === 'baileys' ? 'baileys' : 'agent';
+
+// ── v2: browser agent + search ────────────────────────────────────────────────────────
+export const BROWSER = {
+  enabled: envBool('BROWSER_ENABLED', true),
+  maxSteps: envInt('BROWSER_MAX_STEPS', 14),
+  idleMin: envInt('BROWSER_IDLE_MIN', 6),
+  stateFile: path.join(memoryDir, 'browser_state.json'), // cookies/localStorage only (inside the AES-encrypted state)
+  viewport: { width: 1180, height: 820 },
+};
+export const SEARCH = {
+  cacheMin: envInt('SEARCH_CACHE_MIN', 10),
+  newsHl: env('SEARCH_NEWS_HL', 'en-PK'), newsGl: env('SEARCH_NEWS_GL', 'PK'), newsCeid: env('SEARCH_NEWS_CEID', 'PK:en'),
+};

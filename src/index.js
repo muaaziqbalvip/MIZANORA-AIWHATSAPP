@@ -4,6 +4,8 @@ import { mem } from './memory.js';
 import { enabledProviders } from './config.js';
 import { createWhatsApp } from './whatsapp.js';
 import { createAgentPlatform } from './agentplatform.js';
+import { startScheduler } from './jobs.js';
+import { closeBrowser } from './tools/browser.js';
 import { log, warn, err } from './log.js';
 
 const pairMode = process.argv.includes('--pair') && WA_MODE === 'baileys';
@@ -22,23 +24,12 @@ async function shutdown(reason, code = 0) {
     mem.logEvent(`shutdown: ${reason}`);
     mem.stopAutosave();
     mem.save();
+    await Promise.race([closeBrowser('shutdown').catch(() => {}), new Promise((r) => setTimeout(r, 6000))]);
     await Promise.race([gateway?.stop?.(), new Promise((r) => setTimeout(r, 5000))]);
   } catch (e) { warn('shutdown error:', e.message); }
   mem.save(); // final write after WhatsApp creds have been flushed
   log(`State saved. Exit code ${code}.`);
   process.exit(code);
-}
-
-function startScheduler() {
-  schedTimer = setInterval(async () => {
-    if (!waApi) return;
-    for (const t of mem.dueTasks()) {
-      try {
-        await waApi.sendText(t.chatId, `⏰ Yaad dehani: ${t.text}`);
-        mem.finishTask(t.id);
-      } catch (e) { warn(`reminder ${t.id} failed:`, e.message); }
-    }
-  }, 20000);
 }
 
 async function main() {
@@ -74,7 +65,7 @@ async function main() {
     onFatal: (code) => shutdown(code === 0 ? 'pairing done' : `fatal(${code})`, code),
     onOpen: (wa) => { waApi = wa; },
   });
-  startScheduler();
+  schedTimer = startScheduler(() => waApi);
 }
 
 main().catch((e) => { err('Fatal startup error:', e.stack || e.message); shutdown('startup error', 1); });

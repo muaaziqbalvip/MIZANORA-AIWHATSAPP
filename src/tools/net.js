@@ -34,19 +34,45 @@ export function htmlToText(html) {
     .replace(/[ \t]+/g, ' ').replace(/\n\s*\n\s*\n+/g, '\n\n').trim();
 }
 
+/** Readable text: prefer <article>/<main>, drop navigation/footers/forms so the model sees content, not chrome. */
+export function mainText(html) {
+  let h = String(html).replace(/<!--[\s\S]*?-->/g, ' ');
+  h = h.replace(/<(nav|header|footer|aside|form|noscript|svg|iframe|dialog)\b[\s\S]*?<\/\1>/gi, ' ');
+  const pick = (tag) => { const m = h.match(new RegExp(`<${tag}\\b[^>]*>([\\s\\S]*?)<\\/${tag}>`, 'i')); return m && m[1].length > 500 ? m[1] : null; };
+  return htmlToText(pick('article') || pick('main') || h);
+}
+
+async function pdfToText(buf) {
+  const { spawn } = await import('node:child_process');
+  return new Promise((resolve, reject) => {
+    const p = spawn('pdftotext', ['-layout', '-l', '12', '-', '-'], { stdio: ['pipe', 'pipe', 'ignore'] });
+    let out = ''; p.stdout.on('data', (d) => { out += d; });
+    p.on('error', () => reject(new Error('pdftotext not available')));
+    p.on('close', () => resolve(out));
+    p.stdin.end(buf);
+    setTimeout(() => p.kill('SIGKILL'), 30000).unref?.();
+  });
+}
+
 export async function fetchUrl({ url, max_chars = 6000 }) {
   let cur = url;
   for (let hop = 0; hop < 4; hop++) {
     const u = await assertPublicUrl(cur);
-    const res = await fetch(u, { redirect: 'manual', headers: { 'User-Agent': UA, Accept: 'text/html,text/plain,application/json;q=0.9,*/*;q=0.5' }, signal: AbortSignal.timeout(20000) });
+    const res = await fetch(u, { redirect: 'manual', headers: { 'User-Agent': UA, Accept: 'text/html,application/pdf,text/plain,application/json;q=0.9,*/*;q=0.5', 'Accept-Language': 'en,ur;q=0.8' }, signal: AbortSignal.timeout(20000) });
     if (res.status >= 300 && res.status < 400 && res.headers.get('location')) { cur = new URL(res.headers.get('location'), u).toString(); continue; }
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const type = res.headers.get('content-type') || '';
+    const limit = Math.min(max_chars, 12000);
+    if (/pdf/i.test(type)) {
+      const buf = Buffer.from(await res.arrayBuffer());
+      if (buf.length > 15 * 1024 * 1024) throw new Error('PDF too large');
+      return `PDF: ${u}\n\n${(await pdfToText(buf)).slice(0, limit)}`;
+    }
     if (!/text|json|xml/i.test(type)) throw new Error(`Unsupported content type: ${type}`);
-    const raw = (await res.text()).slice(0, 800000);
-    const body = /html/i.test(type) ? htmlToText(raw) : raw;
-    const title = (raw.match(/<title[^>]*>([\s\S]*?)<\/title>/i) || [])[1]?.trim();
-    return `${title ? `TITLE: ${title}\n` : ''}URL: ${u}\n\n${body.slice(0, Math.min(max_chars, 12000))}`;
+    const raw = (await res.text()).slice(0, 1200000);
+    const body = /html/i.test(type) ? mainText(raw) : raw;
+    const title = (raw.match(/<title[^>]*>([\s\S]*?)<\/title>/i) || [])[1]?.replace(/\s+/g, ' ').trim();
+    return `${title ? `TITLE: ${title}\n` : ''}URL: ${u}\n\n${body.slice(0, limit)}`;
   }
   throw new Error('Too many redirects');
 }
@@ -69,29 +95,29 @@ export function parseDuckDuckGo(html, max) {
   return out;
 }
 
-async function tavily(query, max) {
+export async function tavily(query, max, opts = {}) {
   const key = keysFor('tavily')[0]; if (!key) return null;
-  const r = await fetch('https://api.tavily.com/search', { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` }, body: JSON.stringify({ query, max_results: max, include_answer: true }), signal: AbortSignal.timeout(25000) });
+  const r = await fetch('https://api.tavily.com/search', { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` }, body: JSON.stringify({ query, max_results: max, include_answer: true, ...(opts.recency ? { days: { day: 1, week: 7, month: 30, year: 365 }[opts.recency] } : {}) }), signal: AbortSignal.timeout(25000) });
   if (!r.ok) throw new Error(`tavily ${r.status}`);
   const j = await r.json();
   return { answer: j.answer || '', results: (j.results || []).map((x) => ({ title: x.title, url: x.url, snippet: (x.content || '').slice(0, 400) })) };
 }
-async function brave(query, max) {
+export async function brave(query, max, opts = {}) {
   const key = keysFor('brave')[0]; if (!key) return null;
-  const r = await fetch(`https://api.search.brave.com/res/v1/web/search?q=${encodeURIComponent(query)}&count=${max}`, { headers: { 'X-Subscription-Token': key, Accept: 'application/json' }, signal: AbortSignal.timeout(25000) });
+  const r = await fetch(`https://api.search.brave.com/res/v1/web/search?q=${encodeURIComponent(query)}&count=${max}${opts.recency ? `&freshness=${{ day: 'pd', week: 'pw', month: 'pm', year: 'py' }[opts.recency]}` : ''}`, { headers: { 'X-Subscription-Token': key, Accept: 'application/json' }, signal: AbortSignal.timeout(25000) });
   if (!r.ok) throw new Error(`brave ${r.status}`);
   const j = await r.json();
   return { results: (j.web?.results || []).map((x) => ({ title: x.title, url: x.url, snippet: htmlToText(x.description || '') })) };
 }
-async function serper(query, max) {
+export async function serper(query, max, opts = {}) {
   const key = keysFor('serper')[0]; if (!key) return null;
-  const r = await fetch('https://google.serper.dev/search', { method: 'POST', headers: { 'X-API-KEY': key, 'Content-Type': 'application/json' }, body: JSON.stringify({ q: query, num: max }), signal: AbortSignal.timeout(25000) });
+  const r = await fetch('https://google.serper.dev/search', { method: 'POST', headers: { 'X-API-KEY': key, 'Content-Type': 'application/json' }, body: JSON.stringify({ q: query, num: max, ...(opts.recency ? { tbs: `qdr:${{ day: 'd', week: 'w', month: 'm', year: 'y' }[opts.recency]}` } : {}) }), signal: AbortSignal.timeout(25000) });
   if (!r.ok) throw new Error(`serper ${r.status}`);
   const j = await r.json();
   return { answer: j.answerBox?.answer || j.answerBox?.snippet || '', results: (j.organic || []).map((x) => ({ title: x.title, url: x.link, snippet: x.snippet || '' })) };
 }
-async function duck(query, max) {
-  const r = await fetch('https://html.duckduckgo.com/html/', { method: 'POST', headers: { 'User-Agent': UA, 'Content-Type': 'application/x-www-form-urlencoded' }, body: `q=${encodeURIComponent(query)}`, signal: AbortSignal.timeout(25000) });
+export async function duck(query, max, opts = {}) {
+  const r = await fetch('https://html.duckduckgo.com/html/', { method: 'POST', headers: { 'User-Agent': UA, 'Content-Type': 'application/x-www-form-urlencoded' }, body: `q=${encodeURIComponent(query)}${opts.recency ? `&df=${{ day: 'd', week: 'w', month: 'm', year: 'y' }[opts.recency]}` : ''}`, signal: AbortSignal.timeout(25000) });
   if (!r.ok) throw new Error(`duckduckgo ${r.status}`);
   return { results: parseDuckDuckGo(await r.text(), max) };
 }
@@ -113,7 +139,7 @@ export function parseGrounded(j) {
   return { text, sources };
 }
 
-async function geminiGrounded(query) {
+export async function geminiGrounded(query) {
   const keys = keysFor('gemini');
   if (!keys.length || Date.now() < groundingCooldownUntil) return null;
   const today = new Date().toISOString().slice(0, 10);
