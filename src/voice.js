@@ -51,23 +51,35 @@ async function whisperCompat(base, key, model, buf, filename, mime) {
 }
 
 const deadSttModels = new Set();
+const sleepMs = (ms) => new Promise((r) => setTimeout(r, ms));
+
+/** Gemini speech-to-text: every model on the ladder, each retried with backoff on 429/5xx ("high demand" 503s are transient). */
 async function geminiTranscribe(key, buf, mime) {
-  let lastErr;
+  const errs = [];
+  const body = JSON.stringify({ contents: [{ parts: [{ inline_data: { mime_type: mime.split(';')[0], data: buf.toString('base64') } }, { text: 'Transcribe this audio exactly as spoken, in its original language and script (Urdu in Urdu script, Hindi in Devanagari). Output only the transcript, nothing else.' }] }] });
   for (const model of GEMINI_STT_MODELS) {
     if (deadSttModels.has(model)) continue;
-    const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'x-goog-api-key': key },
-      body: JSON.stringify({ contents: [{ parts: [{ inline_data: { mime_type: mime.split(';')[0], data: buf.toString('base64') } }, { text: 'Transcribe this audio exactly as spoken, in its original language and script (Urdu in Urdu script, Hindi in Devanagari). Output only the transcript, nothing else.' }] }] }),
-      signal: AbortSignal.timeout(90000),
-    });
-    const txt = await res.text();
-    if (res.status === 404) deadSttModels.add(model);
-    if (!res.ok) { lastErr = Object.assign(new Error(`${model} ${res.status} ${txt.slice(0, 160)}`), { status: res.status }); continue; } // next model on the ladder
-    const t = JSON.parse(txt)?.candidates?.[0]?.content?.parts?.map((p) => p.text || '').join('').trim() || '';
-    if (t) return { text: t, language: detectScript(t) };
+    for (let attempt = 0; attempt < 3; attempt++) {
+      let status = 0;
+      try {
+        const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json', 'x-goog-api-key': key }, body, signal: AbortSignal.timeout(60000),
+        });
+        status = res.status;
+        if (res.ok) {
+          const t = (await res.json())?.candidates?.[0]?.content?.parts?.map((p) => p.text || '').join('').trim() || '';
+          if (t) return { text: t, language: detectScript(t) };
+          errs.push(`${model} empty`); break;
+        }
+        if (status === 404) deadSttModels.add(model);
+      } catch { status = 0; }
+      errs.push(`${model} ${status || 'timeout'}`);
+      if (status === 429 || status >= 500 || status === 0) { if (attempt < 2) { await sleepMs(1500 * (attempt + 1)); continue; } }
+      break; // 4xx (bad request / dead model) → next model on the ladder
+    }
   }
-  throw lastErr || new Error('gemini: empty transcript');
+  warn('Gemini STT failed on every model:', errs.join(', '));
+  throw Object.assign(new Error(`gemini: ${errs.slice(-4).join(', ')}`), { status: 503 });
 }
 
 /** transcribe(buffer, mime) → { text, language } — tries every configured STT provider and key. */

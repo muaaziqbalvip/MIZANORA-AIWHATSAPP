@@ -115,7 +115,7 @@ export const IMAGE_ORDER = list(env('IMAGE_PROVIDER_ORDER', 'pollinations,huggin
 
 // Grounded web search (Gemini google_search tool) — same ladder as Mark-LIV actions/web_search.py
 export const GEMINI_SEARCH_MODELS = list(env('GEMINI_SEARCH_MODELS', 'gemini-2.5-flash,gemini-flash-latest,gemini-2.5-flash-lite,gemini-3.5-flash'));
-export const GEMINI_STT_MODELS = list(env('STT_GEMINI_MODEL', 'gemini-2.5-flash,gemini-2.5-flash-lite,gemini-flash-latest,gemini-3.5-flash'));
+export const GEMINI_STT_MODELS = list(env('STT_GEMINI_MODEL', 'gemini-2.5-flash,gemini-2.5-flash-lite,gemini-flash-latest,gemini-3.5-flash,gemini-3.5-flash-lite,gemini-3.1-flash-lite'));
 
 // ── WhatsApp transport ──────────────────────────────────────────────────────────────
 // 'agent'   = Meta's official WhatsApp Agent Platform API (Settings → Agents → your agent → Chat info → API key).

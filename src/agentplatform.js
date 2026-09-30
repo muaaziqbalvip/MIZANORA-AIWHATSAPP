@@ -82,6 +82,12 @@ function sniffImage(buf) {
   return null;
 }
 
+// Short, human-safe reason for WhatsApp (never raw JSON); full details go to the Actions log.
+export function shortErr(e) {
+  const m = String(e?.message || e || '').split(/[{\n]/)[0].replace(/\s+/g, ' ').trim();
+  return m.slice(0, 90) || 'unknown error';
+}
+
 function chunkText(t, n = TEXT_CHUNK) {
   const out = []; let rest = String(t).trim();
   while (rest.length > n) {
@@ -282,7 +288,8 @@ export async function createAgentPlatform({ onFatal, onOpen }) {
     } catch (e) {
       err('processMessage failed:', e.message);
       mem.logEvent(`message failed: ${e.message}`);
-      await wa.sendText(sender, `Maazrat, kuch masla aa gaya: ${String(e.message).slice(0, 160)}`).catch(() => {});
+      const voiceFail = /speech-to-text/i.test(String(e.message));
+      await wa.sendText(sender, voiceFail ? 'Maazrat, abhi voice note samajh nahi aaya (AI service busy hai). Thori der baad dobara bhejein, ya text likh dein.' : `Maazrat, kuch masla aa gaya (${shortErr(e)}). Dobara koshish karein.`).catch(() => {});
     } finally { clearInterval(typingTimer); }
   }
 

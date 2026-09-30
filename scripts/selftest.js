@@ -138,6 +138,8 @@ assert.throws(() => execFileSync('node', [path.join(ROOT, 'scripts/state.js'), '
 
 
 // ── WhatsApp Agent Platform transport (official API) against the mock ──
+const { shortErr } = await import('../src/agentplatform.js');
+assert.equal(shortErr(new Error('Speech-to-text failed: gemini: gemini-3.5-flash 503 {\n "error": {"code": 503}')), 'Speech-to-text failed: gemini: gemini-3.5-flash 503'); ok('user-facing errors never include raw JSON');
 const { createAgentPlatform, parseUpdates: parseAgentUpdates, RateWindow, mediaUrlAllowed } = await import('../src/agentplatform.js');
 const waitFor = async (fn, ms = 15000) => { const t = Date.now(); while (Date.now() - t < ms) { if (fn()) return true; await new Promise((r) => setTimeout(r, 100)); } return false; };
 let fatalCode = null;
