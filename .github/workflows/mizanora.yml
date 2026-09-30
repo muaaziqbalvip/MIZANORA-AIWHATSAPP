@@ -1,0 +1,82 @@
+name: 2 - Mizanora 24/7
+
+# One "shift" = ~5h40m. Before the 6h GitHub limit the bot saves its full state
+# (memory + WhatsApp session, encrypted) to the `state` branch, exits cleanly and
+# triggers the next shift. The cron is only a safety net if a hand-over ever fails.
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '*/20 * * * *'
+
+concurrency:
+  group: mizanora
+  cancel-in-progress: false      # never kill a running shift; at most one waits in the queue
+
+permissions:
+  contents: write                # push the encrypted `state` branch
+  actions: write                 # trigger the next shift
+
+jobs:
+  shift:
+    runs-on: ubuntu-latest
+    timeout-minutes: 355
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: System dependencies (ffmpeg for voice notes, poppler for PDFs)
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ffmpeg poppler-utils
+
+      - name: edge-tts (free neural voices incl. Urdu)
+        run: |
+          python3 -m pip install --user --break-system-packages --quiet edge-tts
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Install Node dependencies
+        run: npm install --no-audit --no-fund
+
+      - name: Run Mizanora
+        id: run
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          STATE_PASSPHRASE: ${{ secrets.STATE_PASSPHRASE }}
+          MAX_RUNTIME_MIN: '340'
+          SAVE_INTERVAL_SEC: '1800'
+          WHATSAPP_AGENT_API_KEY: ${{ secrets.WHATSAPP_AGENT_API_KEY }}
+          OWNER_NUMBERS: ${{ secrets.OWNER_NUMBERS }}
+          OWNER_LIDS: ${{ secrets.OWNER_LIDS }}
+          ALLOWED_NUMBERS: ${{ secrets.ALLOWED_NUMBERS }}
+          BOT_TIMEZONE: ${{ vars.BOT_TIMEZONE }}
+          LLM_PROVIDER_ORDER: ${{ vars.LLM_PROVIDER_ORDER }}
+          # ── LLM providers (each accepts several comma-separated keys) ──
+          GEMINI_API_KEYS: ${{ secrets.GEMINI_API_KEYS }}
+          GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
+          GEMINI_MODEL: ${{ vars.GEMINI_MODEL }}
+          GROQ_API_KEYS: ${{ secrets.GROQ_API_KEYS }}
+          OPENROUTER_API_KEYS: ${{ secrets.OPENROUTER_API_KEYS }}
+          CEREBRAS_API_KEYS: ${{ secrets.CEREBRAS_API_KEYS }}
+          MISTRAL_API_KEYS: ${{ secrets.MISTRAL_API_KEYS }}
+          DEEPSEEK_API_KEYS: ${{ secrets.DEEPSEEK_API_KEYS }}
+          TOGETHER_API_KEYS: ${{ secrets.TOGETHER_API_KEYS }}
+          OPENAI_API_KEYS: ${{ secrets.OPENAI_API_KEYS }}
+          CUSTOM_BASE_URL: ${{ secrets.CUSTOM_BASE_URL }}
+          CUSTOM_API_KEYS: ${{ secrets.CUSTOM_API_KEYS }}
+          CUSTOM_MODEL: ${{ secrets.CUSTOM_MODEL }}
+          # ── search / image ──
+          TAVILY_API_KEY: ${{ secrets.TAVILY_API_KEY }}
+          BRAVE_API_KEY: ${{ secrets.BRAVE_API_KEY }}
+          SERPER_API_KEY: ${{ secrets.SERPER_API_KEY }}
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          POLLINATIONS_API_KEY: ${{ secrets.POLLINATIONS_API_KEY }}
+        run: bash scripts/run-actions.sh
+
+      - name: Hand over to the next shift
+        if: steps.run.outputs.code == '0' || steps.run.outputs.code == '1'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run mizanora.yml --ref "${{ github.ref_name }}"

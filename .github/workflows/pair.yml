@@ -1,0 +1,45 @@
+name: Optional - Pair via Baileys (NOT needed for the official Agent API)
+
+# Run this ONCE. Open the running job → step "Pair" → a code like ABCD-1234 appears in the log.
+# On the bot's phone: WhatsApp → Linked devices → Link a device → "Link with phone number instead" → type the code.
+on:
+  workflow_dispatch:
+    inputs:
+      number:
+        description: "Bot's WhatsApp number, country code + digits only (e.g. 923001234567)"
+        required: true
+      force:
+        description: "Replace an existing saved session (erases old memory)"
+        type: boolean
+        default: false
+
+concurrency:
+  group: mizanora
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  actions: write
+
+jobs:
+  pair:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
+      - name: Pair
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          STATE_PASSPHRASE: ${{ secrets.STATE_PASSPHRASE }}
+          PAIR_NUMBER: ${{ inputs.number }}
+          FORCE: ${{ inputs.force }}
+        run: bash scripts/pair-actions.sh
+      - name: Start the 24/7 bot
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run mizanora.yml --ref "${{ github.ref_name }}"
