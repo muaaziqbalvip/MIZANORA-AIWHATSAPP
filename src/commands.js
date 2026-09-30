@@ -6,6 +6,7 @@ import { providerStatus } from './llm.js';
 import { executeTool } from './tools/index.js';
 import { describeRepeat } from './scheduler.js';
 import { browserAvailable } from './tools/browser.js';
+import { setSub, subscribers, buildBulletin, deliver } from './news.js';
 
 const HELP = (owner) => `*${BOT.name}* — by ${BOT.developer}
 Bas normal baat karein: text, voice note, photo, document ya location bhejein. Main khud tools use karta/karti hoon.
@@ -18,7 +19,7 @@ Bas normal baat karein: text, voice note, photo, document ya location bhejein. M
 *Search*
 /search <sawal> — live web search
 /research <sawal> — gehri research (kai sources, cited)
-/news <topic> — taaza khabrein
+/news <topic> — taaza khabrein\n/newsvideo on|off — subah 7 / raat 8 baje video bulletin
 
 *Automation*
 /tasks — reminders aur scheduled kaam
@@ -89,6 +90,12 @@ export async function handleCommand(cmd, arg, c) {
       if (!c.isOwner) return 'Browser sirf owner use kar sakta hai.';
       return arg ? { rewrite: `Use browser_task to accomplish this goal, then report the result: ${arg}` } : 'Use: /task <maqsad>, jaise /task daraz par sab se sasta 128GB phone dhundo';
     case 'closebrowser': return c.isOwner ? executeTool('browser_close', {}, c) : null;
+    case 'newsvideo': {
+      const a = arg.toLowerCase().trim();
+      if (a === 'on' || a === 'off') { setSub(c.chatId, a === 'on'); return a === 'on' ? '📺 Mizanora News video ON — roz subah 7 aur raat 8 baje bhejunga.' : 'News video band. ✅'; }
+      if (a === 'now') { if (!c.isOwner) return 'Abhi sirf owner test bulletin bana sakta hai.'; await c.wa.sendText(c.chatId, '📺 Bulletin bana raha hoon (3-6 min lagenge)…'); const b = await buildBulletin(); await deliver(c.wa, [c.chatId], b); return { handled: true }; }
+      return `Use: /newsvideo on|off|now — abhi ${subscribers().includes(c.chatId) ? 'ON' : 'OFF'} hai.`;
+    }
     default: return null;
   }
 }
