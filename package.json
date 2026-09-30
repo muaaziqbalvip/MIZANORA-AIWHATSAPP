@@ -1,0 +1,22 @@
+{
+  "name": "mizanora",
+  "version": "1.0.0",
+  "description": "Mizanora — multi-API WhatsApp AI agent with persistent memory, voice notes, web search, image generation and group admin. Developed by Muaaz Iqbal.",
+  "author": "Muaaz Iqbal",
+  "license": "MIT",
+  "type": "module",
+  "private": true,
+  "engines": { "node": ">=20" },
+  "scripts": {
+    "start": "node src/index.js",
+    "pair": "node src/index.js --pair",
+    "test": "node scripts/selftest.js",
+    "state:pack": "node scripts/state.js pack state.enc",
+    "state:unpack": "node scripts/state.js unpack state.enc"
+  },
+  "dependencies": {
+    "@whiskeysockets/baileys": "latest",
+    "pino": "^9.0.0",
+    "qrcode-terminal": "^0.12.0"
+  }
+}
