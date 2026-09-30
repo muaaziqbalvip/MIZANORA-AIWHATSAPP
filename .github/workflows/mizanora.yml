@@ -30,7 +30,7 @@ jobs:
       - name: System dependencies (ffmpeg for voice notes, poppler for PDFs)
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq ffmpeg poppler-utils
+          sudo apt-get install -y -qq ffmpeg poppler-utils fonts-noto-core fonts-noto-color-emoji
 
       - name: edge-tts (free neural voices incl. Urdu)
         run: |
@@ -39,6 +39,17 @@ jobs:
 
       - name: Install Node dependencies
         run: npm install --no-audit --no-fund
+
+      - name: Cache browser
+        if: vars.BROWSER_ENABLED != 'false'
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: pw-${{ runner.os }}-${{ hashFiles('package.json') }}
+
+      - name: Chromium for the browser agent (skip with repo variable BROWSER_ENABLED=false)
+        if: vars.BROWSER_ENABLED != 'false'
+        run: npx playwright install --with-deps chromium || echo "::warning::Chromium install failed — browser tools will report 'not installed'"
 
       - name: Run Mizanora
         id: run
@@ -52,6 +63,13 @@ jobs:
           OWNER_LIDS: ${{ secrets.OWNER_LIDS }}
           ALLOWED_NUMBERS: ${{ secrets.ALLOWED_NUMBERS }}
           BOT_TIMEZONE: ${{ vars.BOT_TIMEZONE }}
+          # ── v2: voice / browser (all optional repository variables) ──
+          TTS_ORDER: ${{ vars.TTS_ORDER }}
+          TTS_GEMINI_MODELS: ${{ vars.TTS_GEMINI_MODELS }}
+          TTS_GEMINI_VOICE_F: ${{ vars.TTS_GEMINI_VOICE_F }}
+          TTS_GEMINI_VOICE_M: ${{ vars.TTS_GEMINI_VOICE_M }}
+          BROWSER_ENABLED: ${{ vars.BROWSER_ENABLED }}
+          BROWSER_MAX_STEPS: ${{ vars.BROWSER_MAX_STEPS }}
           LLM_PROVIDER_ORDER: ${{ vars.LLM_PROVIDER_ORDER }}
           # ── LLM providers (each accepts several comma-separated keys) ──
           GEMINI_API_KEYS: ${{ secrets.GEMINI_API_KEYS }}
