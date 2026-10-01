@@ -1,9 +1,8 @@
 name: 3 - Mizanora Agents (auto, multi-user)
-# Every 30 min: read approved users from Firestore → start one job per (user, channel). No admin click, no per-user files.
 on:
   workflow_dispatch:
   schedule:
-    - cron: '*/30 * * * *'
+    - cron: '*/10 * * * *'
 permissions:
   contents: read
 jobs:
