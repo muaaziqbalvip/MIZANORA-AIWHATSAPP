@@ -11,7 +11,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
-      matrix: ${{ steps.p.outputs.matrix }}
+      agents: ${{ steps.p.outputs.agents }}
       any: ${{ steps.p.outputs.any }}
     steps:
       - uses: actions/checkout@v4
@@ -36,9 +36,9 @@ jobs:
     timeout-minutes: 355
     strategy:
       fail-fast: false
-      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
+      agent: ${{ fromJSON(needs.plan.outputs.agents) }}
     concurrency:
-      group: agent-${{ matrix.uid }}-${{ matrix.ch }}
+      group: agent-${{ matrix.agent }}
       cancel-in-progress: false
     steps:
       - uses: actions/checkout@v4
@@ -48,15 +48,19 @@ jobs:
           sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg poppler-utils
           pip install --user --break-system-packages -q edge-tts && echo "$HOME/.local/bin" >> "$GITHUB_PATH"
       - run: npm install --no-audit --no-fund
+      - name: Parse agent id (validated)
+        env:
+          AGENT: ${{ matrix.agent }}
+        run: |
+          [[ "$AGENT" =~ ^[A-Za-z0-9]{20,40}:(whatsapp|telegram|business)$ ]] || { echo "::error::bad agent id"; exit 1; }
+          echo "AGENT_UID=${AGENT%%:*}" >> "$GITHUB_ENV"
+          echo "CHANNEL=${AGENT##*:}" >> "$GITHUB_ENV"
+          echo "MEMORY_DIR=memory_store/${AGENT%%:*}-${AGENT##*:}" >> "$GITHUB_ENV"
       - run: node scripts/load-config.js "$AGENT_UID" >> "$GITHUB_ENV"
         env:
           FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
-          AGENT_UID: ${{ matrix.uid }}
       - run: node src/index.js
         env:
           FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
-          AGENT_UID: ${{ matrix.uid }}
-          CHANNEL: ${{ matrix.ch }}
-          MEMORY_DIR: memory_store/${{ matrix.uid }}-${{ matrix.ch }}
           MAX_RUNTIME_MIN: '340'
           BROWSER_ENABLED: 'false'
