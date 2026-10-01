@@ -8,7 +8,7 @@ export function nowString() {
   } catch { return new Date().toISOString(); }
 }
 
-export function buildSystemPrompt({ user, chatSummary, isOwner, isGroup, voiceReply, langHint, tools }) {
+export function buildSystemPrompt({ user, chatSummary, isOwner, isGroup, voiceReply, langHint, tools, extra = '' }) {
   const facts = (user?.facts || []).slice(-40).map((f) => `- ${f.text}`).join('\n') || '- (nothing stored yet)';
   const parts = [];
 
@@ -54,5 +54,6 @@ ${isGroup ? '- This is a GROUP chat. Messages are prefixed with the sender name.
 - If you searched or researched, speak only the key finding plus at most two source names.`);
   }
 
+  if (extra) parts.push(extra);
   return parts.join('\n\n');
 }

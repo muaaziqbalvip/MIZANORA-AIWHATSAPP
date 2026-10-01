@@ -49,7 +49,7 @@ export async function respond({ text, image = null, senderName = '', voiceReply 
   }
   const labelled = ctx.isGroup && senderName ? `[${senderName}]: ${userText}` : userText;
 
-  const system = buildSystemPrompt({ user, chatSummary: chatData.summary, isOwner: ctx.isOwner, isGroup: ctx.isGroup, voiceReply, langHint, tools: toolNames(ctx) });
+  const system = buildSystemPrompt({ extra: ctx.bizPrompt || '', user, chatSummary: chatData.summary, isOwner: ctx.isOwner, isGroup: ctx.isGroup, voiceReply, langHint, tools: toolNames(ctx) });
   const messages = [
     { role: 'system', content: system },
     ...chatData.history.map((m) => ({ role: m.role, content: m.content })),
