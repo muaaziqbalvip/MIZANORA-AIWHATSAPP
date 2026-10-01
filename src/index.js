@@ -4,6 +4,10 @@ import { mem } from './memory.js';
 import { enabledProviders } from './config.js';
 import { createWhatsApp } from './whatsapp.js';
 import { createAgentPlatform } from './agentplatform.js';
+import { createTelegram } from './telegram.js';
+import { createBusiness } from './business.js';
+import { startBeat, restoreMemory, pushMemory, logActivity } from './cloud.js';
+import { startNews } from './news.js';
 import { startScheduler } from './jobs.js';
 import { closeBrowser } from './tools/browser.js';
 import { log, warn, err } from './log.js';
@@ -27,7 +31,7 @@ async function shutdown(reason, code = 0) {
     await Promise.race([closeBrowser('shutdown').catch(() => {}), new Promise((r) => setTimeout(r, 6000))]);
     await Promise.race([gateway?.stop?.(), new Promise((r) => setTimeout(r, 5000))]);
   } catch (e) { warn('shutdown error:', e.message); }
-  mem.save(); // final write after WhatsApp creds have been flushed
+  mem.save(); await Promise.race([pushMemory(mem.data), new Promise((r) => setTimeout(r, 8000))]); // final write after WhatsApp creds have been flushed
   log(`State saved. Exit code ${code}.`);
   process.exit(code);
 }
@@ -35,7 +39,10 @@ async function shutdown(reason, code = 0) {
 async function main() {
   console.log(`\n[SYSTEM ONLINE] ${BOT.name} initialized with persistent memory. — by ${BOT.developer}\n`);
 
+  await restoreMemory();
   mem.load();
+  const pushTimer = setInterval(() => { if (mem.data) pushMemory(mem.data); }, 120000); pushTimer.unref?.();
+  logActivity(process.env.AGENT_UID, 'start', `${process.env.CHANNEL || 'whatsapp'} agent started`);
   mem.startAutosave(RUNTIME.saveEverySec);
 
   const providers = enabledProviders();
@@ -59,13 +66,15 @@ async function main() {
     setTimeout(() => { if (!gateway?.isOpen?.()) shutdown('pairing timed out (no link within 12 min)', 1); }, 12 * 60000).unref?.();
   }
 
-  const create = WA_MODE === 'agent' ? createAgentPlatform : createWhatsApp;
+  const create = process.env.CHANNEL === 'business' ? createBusiness : process.env.CHANNEL === 'telegram' || (process.env.TELEGRAM_BOT_TOKEN && WA_MODE !== 'agent' && !process.env.CHANNEL) ? createTelegram : WA_MODE === 'agent' ? createAgentPlatform : createWhatsApp;
   gateway = await create({
     pairMode,
     onFatal: (code) => shutdown(code === 0 ? 'pairing done' : `fatal(${code})`, code),
     onOpen: (wa) => { waApi = wa; },
   });
   schedTimer = startScheduler(() => waApi);
+  if (process.env.CHANNEL !== 'business') startBeat(process.env.AGENT_UID, process.env.CHANNEL || 'whatsapp');
+  if (process.env.NEWS_ENABLED !== 'false') startNews(() => waApi);
 }
 
 main().catch((e) => { err('Fatal startup error:', e.stack || e.message); shutdown('startup error', 1); });

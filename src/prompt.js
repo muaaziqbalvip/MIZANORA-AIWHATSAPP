@@ -8,7 +8,7 @@ export function nowString() {
   } catch { return new Date().toISOString(); }
 }
 
-export function buildSystemPrompt({ user, chatSummary, isOwner, isGroup, voiceReply, langHint, tools }) {
+export function buildSystemPrompt({ user, chatSummary, isOwner, isGroup, voiceReply, langHint, tools, extra = '' }) {
   const facts = (user?.facts || []).slice(-40).map((f) => `- ${f.text}`).join('\n') || '- (nothing stored yet)';
   const parts = [];
 
@@ -33,7 +33,7 @@ You can call these tools: ${tools.join(', ') || 'none'}.
 - BROWSER (owner): browse opens a page in a real browser (JS sites, screenshots); browser_task runs a multi-step goal by itself (search, click, fill forms, compare prices, read tables). Prefer web_search first for simple facts; use the browser when the answer needs interacting with a site. If a tool result says NEEDS USER CONFIRMATION or NEEDS USER INPUT, relay that to the user plainly and wait — never confirm on their behalf. Never ask for or type passwords, OTPs or card numbers.
 - AUTOMATION (owner): schedule_task runs a prompt of yours automatically at a time / on a repeat and sends the result (add voice=true for a voice note); set_reminder for simple reminders (supports repeat). Use list_reminders / cancel_reminder to manage them. Times are in the bot timezone.
 - Money: currency_convert, crypto_price. Files (owner): write_file → zip_and_send / send_workspace_file.
-- Voice: set_voice_style changes the user's voice (male/female, speed); send_voice_note speaks any text.
+- Music: generate_song makes a real studio-quality song with vocals (owner; preferred for "gaana/song banao"); compose_music is the free offline instrumental fallback. compose_music writes and sends an instrumental MP3 (you write the notes; be honest that it is synth-style, no sung vocals).\n- Voice: set_voice_style changes the user's voice (male/female, speed); send_voice_note speaks any text.
 - When the user tells you something durable about themselves (name, work, preferences, projects), call remember_fact.
 - For code/calculations use run_python when available; otherwise reason carefully in text.
 - You are ${isOwner ? 'talking to your OWNER — you may run code/system commands and administer groups when asked' : 'NOT talking to the owner — code execution and system commands are unavailable; if asked, say only the owner can do that'}.
@@ -54,5 +54,6 @@ ${isGroup ? '- This is a GROUP chat. Messages are prefixed with the sender name.
 - If you searched or researched, speak only the key finding plus at most two source names.`);
   }
 
+  if (extra) parts.push(extra);
   return parts.join('\n\n');
 }

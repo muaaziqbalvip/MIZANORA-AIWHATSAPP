@@ -7,7 +7,7 @@ import { mem } from './memory.js';
 import { log, warn, err } from './log.js';
 
 const G = 'https://graph.facebook.com/v21.0';
-export const verifySig = (body, sig, secret) => { if (!secret) return true; const h = 'sha256=' + crypto.createHmac('sha256', secret).update(body).digest('hex'); return !!sig && sig.length === h.length && crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(h)); };
+export const verifySig = (body, sig, secret) => { if (!secret) return false; const h = 'sha256=' + crypto.createHmac('sha256', secret).update(body).digest('hex'); return !!sig && sig.length === h.length && crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(h)); };
 export const buttonsOf = (arr = []) => arr.map((t) => String(t).trim()).filter(Boolean).slice(0, 3).map((t, i) => ({ type: 'reply', reply: { id: `b${i}`, title: t.slice(0, 20) } }));
 export const bizPrompt = (b) => `## You are the WhatsApp customer-service assistant of the business "${b.name || 'this business'}"
 - Speak for the business, politely and professionally, in the customer's language (Roman Urdu / Urdu / English). Short WhatsApp-style answers.
@@ -52,7 +52,7 @@ export async function createBusiness({ onOpen, onFatal }) {
           const x = d.data(); await d.ref.update({ done: true });
           if (!verifySig(x.body, x.sig, biz.appSecret)) { warn('webhook signature mismatch — dropped'); continue; }
           const v = JSON.parse(x.body)?.entry?.[0]?.changes?.[0]?.value; const name = v?.contacts?.[0]?.profile?.name || '';
-          for (const m of v?.messages || []) { if (seen.has(m.id)) continue; seen.add(m.id); handle(m, name).catch((e) => warn('biz handle failed:', e.message.slice(0, 100))); }
+          for (const m of v?.messages || []) { if (seen.has(m.id)) continue; seen.add(m.id); if (seen.size > 5000) seen.delete(seen.values().next().value); handle(m, name).catch((e) => warn('biz handle failed:', e.message.slice(0, 100))); }
         }
       } catch (e) { warn('inbox poll failed:', e.message.slice(0, 80)); await new Promise((r) => setTimeout(r, 5000)); }
       await new Promise((r) => setTimeout(r, 1500));
