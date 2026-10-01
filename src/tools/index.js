@@ -14,6 +14,7 @@ import { execFile } from 'node:child_process';
 import { generateImageBuffer } from './image.js';
 import { runPython, runShell, listWorkspace } from './exec.js';
 import { providerStatus } from '../llm.js';
+import { composeMusic, generateSong } from './music.js';
 
 const str = (d, extra = {}) => ({ type: 'string', description: d, ...extra });
 const num = (d) => ({ type: 'number', description: d });
@@ -175,6 +176,16 @@ const TOOLS = {
     run: (a, ctx) => browserTaskTool(a, ctx),
   },
   browser_close: { access: 'owner', desc: 'Close the browser and free memory.', params: obj({}), run: () => closeBrowser('requested') },
+  generate_song: {
+    access: 'owner', desc: 'Create a REAL full song with vocals (Google Lyria, studio quality, costs API credit) and send it as MP3. Describe genre/mood/language in prompt; optionally pass your own lyrics. If it fails the offline synth tool compose_music is the fallback.',
+    params: obj({ prompt: str('Style, mood, language, topic, e.g. "emotional Urdu ghazal, soft piano, female vocals"'), lyrics: str('Optional lyrics with [Verse]/[Chorus] markers'), instrumental: { type: 'boolean', description: 'true = no vocals' } }, ['prompt']),
+    run: async (a, ctx) => { const r = await generateSong(a); await ctx.wa.sendDocument(ctx.chatId, r.buf, `song-${Date.now()}.mp3`, ctx.msgKey); return `Song sent (${r.model}).${r.lyrics ? ` Lyrics/structure:\n${r.lyrics.slice(0, 1500)}` : ''}`; },
+  },
+  compose_music: {
+    access: 'all', desc: 'Compose a short instrumental song and send it as an MP3. YOU write the music: tempo, up to 6 tracks, each with instrument (piano|pad|bass|lead|pluck) and notes text like "C4:1 E4:1 G4:2 R:1 C4+E4+G4:4" (note+octave:beats, R=rest, + = chord). Optional drums string of 16th steps using k(kick) s(snare) h(hat) . (rest), e.g. "k.h.s.h.k.h.s.h.". Make 8-16 bars, a clear melody, chords and bass.',
+    params: obj({ title: str('Song title'), tempo: num('BPM 50-200'), bars: num('Bars if drums only'), drums: str('Drum pattern'), tracks: { type: 'array', items: obj({ instrument: str('piano|pad|bass|lead|pluck'), notes: str('Note text'), volume: num('0.1-1') }, ['instrument', 'notes']) } }, ['title', 'tracks']),
+    run: async (a, ctx) => { const r = await composeMusic(a); await ctx.wa.sendDocument(ctx.chatId, fs.readFileSync(r.file), path.basename(r.file), ctx.msgKey); return `Song sent (${r.seconds}s). Synth-style instrumental, not a studio vocal track.`; },
+  },
   write_file: {
     access: 'owner', desc: 'Create/overwrite a text file in the workspace (code, notes, csv, html…). Then use send_workspace_file to deliver it.',
     params: obj({ filename: str('Name inside the workspace, e.g. report.md or site/index.html'), content: str('File content') }, ['filename', 'content']),
@@ -277,6 +288,7 @@ const TOOLS = {
   },
 };
 
+if (process.env.AGENT_UID) { delete TOOLS.run_shell; delete TOOLS.run_python; } // hosted user agents share a runner with the admin secret
 function allowed(tool, ctx) {
   switch (tool.access) {
     case 'all': return true;
