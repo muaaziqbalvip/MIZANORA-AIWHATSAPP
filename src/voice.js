@@ -37,7 +37,7 @@ function run(cmd, args, { input, timeoutMs = 60000 } = {}) {
   });
 }
 
-export const tmpFile = (ext) => path.join(os.tmpdir(), `mz-${Date.now()}-${Math.random().toString(36).slice(2, 7)}.${ext}`);
+const tmpFile = (ext) => path.join(os.tmpdir(), `mz-${Date.now()}-${Math.random().toString(36).slice(2, 7)}.${ext}`);
 
 // ── Speech to text ───────────────────────────────────────────────────────────────────
 async function whisperCompat(base, key, model, buf, filename, mime) {

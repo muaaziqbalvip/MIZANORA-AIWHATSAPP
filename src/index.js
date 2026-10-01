@@ -4,10 +4,6 @@ import { mem } from './memory.js';
 import { enabledProviders } from './config.js';
 import { createWhatsApp } from './whatsapp.js';
 import { createAgentPlatform } from './agentplatform.js';
-import { createTelegram } from './telegram.js';
-import { createBusiness } from './business.js';
-import { startBeat } from './cloud.js';
-import { startNews } from './news.js';
 import { startScheduler } from './jobs.js';
 import { closeBrowser } from './tools/browser.js';
 import { log, warn, err } from './log.js';
@@ -63,15 +59,13 @@ async function main() {
     setTimeout(() => { if (!gateway?.isOpen?.()) shutdown('pairing timed out (no link within 12 min)', 1); }, 12 * 60000).unref?.();
   }
 
-  const create = process.env.CHANNEL === 'business' ? createBusiness : process.env.CHANNEL === 'telegram' || (process.env.TELEGRAM_BOT_TOKEN && WA_MODE !== 'agent' && !process.env.CHANNEL) ? createTelegram : WA_MODE === 'agent' ? createAgentPlatform : createWhatsApp;
+  const create = WA_MODE === 'agent' ? createAgentPlatform : createWhatsApp;
   gateway = await create({
     pairMode,
     onFatal: (code) => shutdown(code === 0 ? 'pairing done' : `fatal(${code})`, code),
     onOpen: (wa) => { waApi = wa; },
   });
   schedTimer = startScheduler(() => waApi);
-  if (process.env.CHANNEL !== 'business') startBeat(process.env.AGENT_UID, process.env.CHANNEL || 'whatsapp');
-  if (process.env.NEWS_ENABLED !== 'false') startNews(() => waApi);
 }
 
 main().catch((e) => { err('Fatal startup error:', e.stack || e.message); shutdown('startup error', 1); });
