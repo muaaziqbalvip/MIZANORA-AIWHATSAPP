@@ -3,7 +3,7 @@ name: 3 - Mizanora Agents (auto, multi-user)
 on:
   workflow_dispatch:
   schedule:
-    - cron: '*/30 * * * *'
+    - cron: '*/30 * * * *' # Runs every 30 minutes
 permissions:
   contents: read
 jobs:
@@ -36,7 +36,8 @@ jobs:
     timeout-minutes: 355
     strategy:
       fail-fast: false
-      agent: ${{ fromJSON(needs.plan.outputs.agents) }}
+      matrix:
+        agent: ${{ fromJSON(needs.plan.outputs.agents) }}
     concurrency:
       group: agent-${{ matrix.agent }}
       cancel-in-progress: false
