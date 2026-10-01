@@ -1,0 +1,17 @@
+name: agent-4oEymLtX-whatsapp
+on: { workflow_dispatch: {}, schedule: [{ cron: '*/30 * * * *' }] }
+concurrency: { group: agent-4oEymLtXnSQM0hua3qST5WfN1El2-whatsapp, cancel-in-progress: false }
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 355
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22 }
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg poppler-utils && pip install --user --break-system-packages -q edge-tts && echo "$HOME/.local/bin" >> $GITHUB_PATH
+      - run: npm install --no-audit --no-fund
+      - run: node scripts/load-config.js 4oEymLtXnSQM0hua3qST5WfN1El2 >> $GITHUB_ENV
+        env: { FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }} }
+      - run: MAX_RUNTIME_MIN=340 node src/index.js
+        env: { FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}, AGENT_UID: 4oEymLtXnSQM0hua3qST5WfN1El2, CHANNEL: whatsapp, MEMORY_DIR: memory_store/4oEymLtXnSQM0hua3qST5WfN1El2-whatsapp }
