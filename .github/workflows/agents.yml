@@ -1,0 +1,55 @@
+name: 3 - Mizanora Agents (auto, multi-user)
+# Every 30 min: read approved users from Firestore → start one job per (user, channel). No admin click, no per-user files.
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '*/30 * * * *'
+permissions:
+  contents: read
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      matrix: ${{ steps.p.outputs.matrix }}
+      any: ${{ steps.p.outputs.any }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22 }
+      - run: npm install --no-audit --no-fund firebase-admin
+      - id: p
+        run: node scripts/plan.js
+        env:
+          FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
+  run:
+    needs: plan
+    if: needs.plan.outputs.any == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 355
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    concurrency:
+      group: agent-${{ matrix.uid }}-${{ matrix.ch }}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22 }
+      - run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg poppler-utils
+          pip install --user --break-system-packages -q edge-tts && echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - run: npm install --no-audit --no-fund
+      - run: node scripts/load-config.js "$AGENT_UID" >> "$GITHUB_ENV"
+        env:
+          FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
+          AGENT_UID: ${{ matrix.uid }}
+      - run: node src/index.js
+        env:
+          FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
+          AGENT_UID: ${{ matrix.uid }}
+          CHANNEL: ${{ matrix.ch }}
+          MEMORY_DIR: memory_store/${{ matrix.uid }}-${{ matrix.ch }}
+          MAX_RUNTIME_MIN: '340'
+          BROWSER_ENABLED: 'false'
