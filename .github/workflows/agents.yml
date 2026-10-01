@@ -3,7 +3,7 @@ name: 3 - Mizanora Agents (auto, multi-user)
 on:
   workflow_dispatch:
   schedule:
-    - cron: '*/10 * * * *'
+    - cron: '*/30 * * * *'
 permissions:
   contents: read
 jobs:
@@ -17,6 +17,13 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with: { node-version: 22 }
+      - name: Check that all bot files are in the repo
+        run: |
+          for f in scripts/plan.js src/plan.js src/cloud.js src/config.js src/index.js scripts/load-config.js package.json; do
+            [ -f "$f" ] || { echo "::error::$f repo mein nahi hai. Mizanora-v3-core.zip ki SAARI files upload karein (sirf agents.yml kaafi nahi)."; MISSING=1; }
+          done
+          [ -z "$MISSING" ] || exit 1
+          grep -q '"type": "module"' package.json || { echo '::error::package.json purani hai (type: module nahi). Nayi package.json upload karein.'; exit 1; }
       - run: npm install --no-audit --no-fund firebase-admin
       - id: p
         run: node scripts/plan.js
